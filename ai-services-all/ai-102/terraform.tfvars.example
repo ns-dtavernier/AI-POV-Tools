@@ -1,0 +1,116 @@
+# Netskope AI Services — new VPC (AIG public + Guardrails private)
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to terraform.tfvars and fill in the values marked REQUIRED.
+# Required values: availability_zone, aig_ami_id, image_s3_bucket, dlpod_licensekey,
+#                  netskope credentials (env vars), and EC2 key pair names.
+# All other values have working defaults and may be left as-is for most POVs.
+#
+# Full documentation: README.md
+#
+# CREDENTIALS — set as environment variables, not in this file:
+#   export NETSKOPE_SERVER_URL="https://mycompany.goskope.com/api/v2"
+#   export NETSKOPE_API_KEY="your-rest-api-v2-token"
+
+# ── AWS ───────────────────────────────────────────────────────────────────────
+
+aws_region = "us-east-1"
+
+# Must be a valid AZ within aws_region.
+# Run: aws ec2 describe-availability-zones --region us-east-1 --query 'AvailabilityZones[*].ZoneName'
+availability_zone = "us-east-1a"
+
+# ── Network ───────────────────────────────────────────────────────────────────
+# These CIDRs work for most POVs. Change them if they overlap with networks
+# you need to connect to this VPC (e.g. via VPC peering or Transit Gateway).
+
+vpc_cidr            = "10.0.0.0/16"
+public_subnet_cidr  = "10.0.1.0/24"   # AIG instance (EIP) + NAT Gateway
+private_subnet_cidr = "10.0.2.0/24"   # Guardrails GPU instance (no public IP)
+
+# CIDRs allowed to reach the AI Gateway on TCP port 443.
+# The default permits access from anywhere — restrict to your corporate egress
+# IP or VPN CIDR for a more production-like deployment.
+allowed_cidr_blocks = ["0.0.0.0/0"]
+
+# ── AIG — Netskope ────────────────────────────────────────────────────────────
+# Prefer environment variables (NETSKOPE_SERVER_URL, NETSKOPE_API_KEY) over
+# setting these here — they will appear in the Terraform state file.
+#
+# netskope_server_url = "https://mycompany.goskope.com/api/v2"
+# netskope_api_key    = "your-rest-api-v2-token"
+
+# Display name shown in the Netskope tenant (1-15 characters).
+appliance_name = "aig-pov"
+
+# Secrets Manager secret that the AIG reads at first boot.
+# Must start with "aig/" to match the deployment IAM policy.
+secret_name = "aig/prod/bootstrap"
+
+# ── AIG — EC2 ─────────────────────────────────────────────────────────────────
+
+# REQUIRED: AMI ID for the Netskope AI Gateway appliance in your target region.
+# Subscribe on AWS Marketplace; the AMI ID is displayed after accepting terms.
+# The value below is a placeholder — update it for your region.
+aig_ami_id = "ami-0a66805d7fb085df4"
+
+# c6a.4xlarge (16 vCPU, 32 GB RAM) is the recommended minimum.
+aig_instance_type = "c6a.4xlarge"
+
+# REQUIRED: EC2 key pair name for SSH access to the AIG instance.
+# Must already exist in the target region (aws ec2 describe-key-pairs --region YOUR_REGION).
+aig_key_name = "my-key-pair"
+
+# ── Guardrails — project ──────────────────────────────────────────────────────
+
+project     = "guardrails"
+environment = "dev"
+
+# ── Guardrails — EC2 ──────────────────────────────────────────────────────────
+
+# g4dn.xlarge (1x NVIDIA T4, 4 vCPU, 16 GB RAM) is the minimum GPU instance.
+# Use g5.xlarge (1x NVIDIA A10G) for higher LLM throughput.
+guardrails_instance_type = "g4dn.xlarge"
+volume_size_gb           = 100
+
+# Fixed private IP for the Guardrails instance. Must be within private_subnet_cidr.
+# This address is embedded in the AIG bootstrap secret at plan time.
+# Do not change this value after running terraform apply.
+guardrails_private_ip = "10.0.2.10"
+
+# REQUIRED: EC2 key pair name for SSH access to the Guardrails instance.
+guardrails_key_pair_name = "my-key-pair"
+
+# ── Guardrails — image ────────────────────────────────────────────────────────
+# REQUIRED: Upload aisecurity-llm.tgz to this S3 bucket before running
+# terraform apply. The bucket must be in the same region as aws_region.
+#
+# aws s3 mb s3://my-guardrails-bucket --region us-east-1
+# aws s3 cp aisecurity-llm.tgz s3://my-guardrails-bucket/aisecurity-llm.tgz
+
+image_s3_bucket = "my-guardrails-bucket"
+image_s3_key    = "aisecurity-llm.tgz"
+
+# ── DLPoD ─────────────────────────────────────────────────────────────────────
+
+# REQUIRED: AMI ID for the Netskope DLPoD appliance in your target region.
+# Obtain from Netskope — AMI IDs are region-specific.
+# The value below is for us-west-1 — update for other regions.
+dlpod_ami_id = "ami-0b3a14615c7e7944e"
+
+dlpod_appliance_name = "dlpod-pov"
+# c5d.4xlarge (Intel NVMe, 16 vCPU / 32 GB) is recommended for faster nsbootstrap init.
+# c5ad.4xlarge (AMD NVMe) is equivalent but not available in us-west-1.
+dlpod_instance_type  = "c5d.4xlarge"
+dlpod_private_ip     = "10.0.2.20"
+dlpod_persona        = "dlp-on-demand"
+dlpod_hostname       = "dlp.aigw.internal"
+
+# REQUIRED: EC2 key pair name for SSH access to the DLPoD instance.
+dlpod_key_name = "my-key-pair"
+
+# REQUIRED: EC2 key pair name for SSH access to the bastion instance.
+bastion_key_name = "my-key-pair"
+
+# REQUIRED: Netskope license key for the DLPoD appliance.
+# Sensitive — use a gitignored tfvars file or TF_VAR_dlpod_licensekey env var.
+# dlpod_licensekey = "XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
