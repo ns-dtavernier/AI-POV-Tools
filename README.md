@@ -2,6 +2,8 @@
 
 This repository contains Terraform templates and supporting documentation for deploying Netskope appliances in proof-of-value (POV) environments on AWS. Each module is designed for fast, repeatable, unattended deployment — no manual console or SSH steps required.
 
+**New here?** Read [`HELP.md`](HELP.md) — an "I want to…" index, FAQ and glossary. If you use Claude Code, open this folder and ask; `CLAUDE.md` gives it context and `/pov-preflight`, `/pov-deploy`, `/pov-troubleshoot` and `/pov-teardown` guide each step. `scripts/preflight.sh <template-dir>` runs the readiness checks from a plain shell.
+
 ---
 
 ## Modules
@@ -14,21 +16,21 @@ Deploys the complete Netskope AI Services stack — AI Gateway, AI Guardrails GP
 |--------|-----------|---------|
 | [New VPC — public AIG](ai-services-all/new-vpc-public/README.md) | `ai-services-all/new-vpc-public/` | Starting from scratch; full stack in a new VPC, AIG with public Elastic IP |
 
-**Use this when** you want the full AIG + Guardrails + DLPoD stack running as quickly as possible in a fresh AWS environment. For deployments where the components are deployed separately or into existing infrastructure, use the individual module templates below.
+**This is the recommended template for a full-stack POV.** It deploys everything in one apply with readiness gates and the AIG↔DLPoD DNS/TLS wiring done for you. Use the individual module templates below only when a single component is needed, or when the combined stack is not wanted and the components are to be deployed one at a time — in that case follow the order in [`STAGED-BUILD.md`](STAGED-BUILD.md).
 
 ---
 
 ### AI Gateway (AIG)
 
-The AI Gateway inspects and controls AI traffic, providing visibility and policy enforcement for generative AI tools such as ChatGPT, Copilot, and custom LLM applications.
+Deploys the AI Gateway only.
 
 Three deployment options are provided, covering the most common network topologies encountered in POVs:
 
-| Option | Directory | Best for |
-|--------|-----------|---------|
-| [Existing VPC](aig/existing-vpc/README.md) | `aig/existing-vpc/` | You already have a VPC and subnet in AWS |
-| [New VPC — public subnet](aig/new-vpc-public/README.md) | `aig/new-vpc-public/` | Fastest setup; gateway directly reachable from the internet |
-| [New VPC — private subnet](aig/new-vpc-private/README.md) | `aig/new-vpc-private/` | Production-like; no inbound internet exposure, outbound via NAT |
+| Option | Directory | Best for                                                                                   |
+|--------|-----------|--------------------------------------------------------------------------------------------|
+| [Existing VPC](aig/existing-vpc/README.md) | `aig/existing-vpc/` | You already have a VPC and subnet in AWS and perhaps already deployed guardrails and DLPoD |
+| [New VPC — public subnet](aig/new-vpc-public/README.md) | `aig/new-vpc-public/` | Fastest setup; gateway directly reachable from the internet                                |
+| [New VPC — private subnet](aig/new-vpc-private/README.md) | `aig/new-vpc-private/` | Production-like; no inbound internet exposure, outbound via NAT                            |
 
 The gateway self-enrolls at first boot using an enrollment token stored in AWS Secrets Manager — no interactive steps required after `terraform apply`.
 
@@ -38,7 +40,7 @@ The gateway self-enrolls at first boot using an enrollment token stored in AWS S
 
 ### AI Guardrails — GPU
 
-AI Guardrails runs an NVIDIA GPU-backed LLM service that the AIG appliance uses for inline AI content inspection. This module deploys the Guardrails Docker container on an Ubuntu 22.04 EC2 GPU instance.
+Deploys the Guardrails Docker container on an Ubuntu 22.04 EC2 GPU instance.
 
 | Option | Directory | Best for |
 |--------|-----------|---------|
@@ -53,7 +55,7 @@ Setup is automated via a two-phase UserData script — NVIDIA drivers are instal
 
 ### DLP On-Demand (DLPoD)
 
-DLPoD provides cloud-delivered data loss prevention inspection. The appliance is zero-touch provisioned via EC2 user-data — no SSH or manual console steps are required.
+Deploys DLP On-Demand, which provides cloud-delivered data loss prevention inspection. The appliance is zero-touch provisioned via EC2 user-data — no SSH or manual console steps are required.
 
 | Option | Directory | Best for |
 |--------|-----------|---------|
@@ -71,6 +73,13 @@ Both templates generate a TLS certificate chain and output `dlp_host` and `ca_ce
 ```
 AI-POV-Tools/
   README.md                      # This file — project overview and navigation
+  HELP.md                        # "I want to…" index, FAQ, glossary
+  STAGED-BUILD.md                # One-component-at-a-time deployment order (fallback)
+  CLAUDE.md                      # Context for Claude Code; module choice and safety rules
+  .claude/commands/              # /pov-preflight, /pov-deploy, /pov-troubleshoot, /pov-teardown, /pov-curate
+  scripts/
+    preflight.sh                 # Readiness checks for a template directory
+    curate.sh                    # Build a customer package (Netskope SEs)
   ai-services-all/
     new-vpc-public/               # Full stack: AIG (public EIP) + Guardrails + DLPoD in one apply
   aig/                            # AI Gateway Terraform templates
@@ -85,7 +94,8 @@ AI-POV-Tools/
     existing-vpc/                 # GPU instance in an existing VPC and subnet
     new-vpc-private/              # GPU instance in a new VPC with a private subnet and NAT GW
   dlpod/                          # DLP On-Demand Terraform templates
-    README.md                     # DLPoD ZTP bootstrap reference
+    README.md                     # DLPoD overview and template selection guide
+    docs/                         # bootstrap.json (ZTP) schema reference
     existing-vpc/                 # DLPoD in an existing VPC, with Route 53 for hostname TLS
     new-vpc-private/              # DLPoD in a new VPC with a private subnet and NAT GW
 ```

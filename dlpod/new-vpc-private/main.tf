@@ -290,7 +290,7 @@ locals {
 
   # System — licensekey is required; hostname and timezone are optional.
   _system = merge(
-    { licensekey = var.licensekey },
+    { licensekey = var.dlpod_licensekey },
     var.system_hostname != "" ? { hostname = var.system_hostname } : {},
     var.system_timezone != "" ? { timezone = var.system_timezone } : {}
   )
@@ -318,7 +318,7 @@ resource "aws_instance" "dlpod" {
   private_ip             = var.dlpod_private_ip # null = AWS assigns from subnet
   iam_instance_profile   = aws_iam_instance_profile.dlpod.name
   vpc_security_group_ids = [aws_security_group.dlpod.id]
-  key_name               = var.key_name
+  key_name               = var.key_pair_name
 
   # Raw JSON bootstrap config — read by nsbootstrap.service at first boot.
   # jsonencode() produces the exact JSON string that nsbootstrap expects.

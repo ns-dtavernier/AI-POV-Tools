@@ -22,5 +22,11 @@ venv/
 # OS
 .DS_Store
 
-# Internal docs at project root (PDFs and reference documents — not for distribution)
-/docs/
+# Internal material at project root (PDFs, CA PEM, policy source — not for distribution)
+/internal/
+
+# Claude Code local permission overrides (machine-specific; pre-approve apply/destroy)
+.claude/settings.local.json
+
+# Curated customer packages
+/dist/

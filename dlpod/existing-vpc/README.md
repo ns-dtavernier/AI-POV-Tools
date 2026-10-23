@@ -2,7 +2,7 @@
 
 Deploys a Netskope DLP On-Demand (DLPoD) appliance into an existing AWS VPC with a single `terraform apply`. DLPoD is zero-touch provisioned — Terraform generates TLS certificates and delivers the full bootstrap config via EC2 user-data. No manual console steps are required.
 
-Use this template as **Stage 2** of a staged build where you deploy Guardrails, DLPoD, and the AIG separately. See [staged build workflow](#staged-build-workflow).
+Use this template as **Stage 2** of a staged build — the fallback when the combined `ai-services-all/new-vpc-public/` stack is not wanted and Guardrails, DLPoD, and the AIG are deployed one at a time. See [staged build workflow](#staged-build-workflow).
 
 ---
 
@@ -132,13 +132,18 @@ terraform output -raw ca_cert_pem   # CA cert PEM — pass to AIG as dlp.certifi
 
 ## Staged build workflow
 
+This template is **Stage 2**. Stage 1 (`gpu-guardrails/new-vpc-private/`) creates the VPC and outputs the values this template needs; Stage 3 (`aig/existing-vpc/`) consumes this template's outputs.
+
 ```
-Stage 1: gpu-guardrails/existing-vpc/   →  outputs: ai_guardrails_host
-Stage 2: dlpod/existing-vpc/            →  outputs: dlp_host, ca_cert_pem
-Stage 3: aig/existing-vpc/              →  inputs:  guardrails_host, dlp_host, dlp_ca_cert_pem
+Stage 1: gpu-guardrails/new-vpc-private/  →  vpc_id, private_subnet_id, vpc_cidr, private_subnet_cidr, ai_guardrails_host
+Stage 2: dlpod/existing-vpc/              →  in:  vpc_id, subnet_id, vpc_cidr, dlpod_private_ip, allowed_inspection_cidr
+                                             out: dlp_host, ca_cert_pem
+Stage 3: aig/existing-vpc/                →  in:  guardrails_host, dlp_host, dlp_ca_cert_pem
 ```
 
-See [ai-services-all/README.md](../../ai-services-all/README.md#staged-build-deploying-components-in-order) for the full workflow.
+The AIG goes last because it reads its bootstrap secret once at first boot, and that secret must already contain `dlp_host` and the CA certificate this template generates.
+
+See [ai-services-all/README.md](../../STAGED-BUILD.md) for the full workflow.
 
 ---
 

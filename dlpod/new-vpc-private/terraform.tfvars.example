@@ -46,7 +46,7 @@ instance_type = "m5.2xlarge"
 # EC2 key pair name for SSH access. Optional.
 # If omitted, attach AmazonSSMManagedInstanceCore to the instance IAM role
 # and use AWS Systems Manager Session Manager for console access.
-# key_name = "my-key-pair"
+# key_pair_name = "my-key-pair"
 
 # ── Appliance identity ────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ persona = "dlp-on-demand"
 
 # REQUIRED: Netskope license key for this appliance.
 # Mark this sensitive — do not commit to version control.
-licensekey = "REPLACE_WITH_LICENSE_KEY"
+dlpod_licensekey = "REPLACE_WITH_LICENSE_KEY"
 
 # REQUIRED: primary DNS server reachable from the private subnet.
 # Use your VPC's DNS resolver (VPC CIDR +2, e.g. 10.0.0.2) or a corporate DNS.

@@ -32,3 +32,20 @@ output "ca_cert_pem" {
   description = "DLPoD CA certificate in PEM format. Pass to the AIG bootstrap secret as dlp.certificate so the AIG can verify the DLPoD TLS chain. Retrieve with: terraform output -raw ca_cert_pem"
   value       = tls_self_signed_cert.dlpod_ca.cert_pem
 }
+
+# ── Network outputs for staged builds ────────────────────────────────────────
+
+output "public_subnet_id" {
+  description = "Public subnet ID (holds the NAT Gateway)"
+  value       = aws_subnet.public.id
+}
+
+output "vpc_cidr" {
+  description = "VPC CIDR"
+  value       = aws_vpc.this.cidr_block
+}
+
+output "private_subnet_cidr" {
+  description = "Private subnet CIDR — use as allowed_service_cidr / allowed_cidr_blocks in the other existing-vpc templates"
+  value       = aws_subnet.private.cidr_block
+}

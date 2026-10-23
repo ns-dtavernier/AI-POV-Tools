@@ -85,6 +85,24 @@ resource "aws_iam_role_policy" "aig_read_secret" {
   })
 }
 
+resource "aws_iam_role_policy" "aig_bedrock" {
+  name = "${var.appliance_name}-bedrock"
+  role = aws_iam_role.aig.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "BedrockInvoke"
+      Effect   = "Allow"
+      Action   = [
+        "bedrock:InvokeModel",
+        "bedrock:CallWithBearerToken",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "aig" {
   name = "${var.appliance_name}-instance-profile"
   role = aws_iam_role.aig.name

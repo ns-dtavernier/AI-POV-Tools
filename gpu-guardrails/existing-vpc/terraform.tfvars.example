@@ -1,0 +1,46 @@
+# Netskope AI Guardrails — existing VPC deployment
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to terraform.tfvars and fill in the values marked REQUIRED.
+#
+# Full documentation: existing-vpc/README.md
+
+# ── AWS region ────────────────────────────────────────────────────────────────
+
+aws_region = "us-east-1"
+
+# ── Existing VPC ──────────────────────────────────────────────────────────────
+
+# REQUIRED: ID of the existing VPC to deploy the Guardrails instance into.
+# Find with: aws ec2 describe-vpcs --region YOUR_REGION --output table
+vpc_id = "vpc-0123456789abcdef0"
+
+# REQUIRED: ID of the existing subnet for the instance.
+# The subnet must have outbound internet access (via NAT Gateway or IGW route)
+# so the instance can reach apt, Docker Hub, NVIDIA repos, and S3 during setup.
+# Find with: aws ec2 describe-subnets --filters Name=vpc-id,Values=YOUR_VPC_ID
+subnet_id = "subnet-0123456789abcdef0"
+
+# REQUIRED: CIDRs allowed to reach the Guardrails service on TCP port 8080.
+# Restrict to the AIGW source CIDR or your corporate/VPN network range.
+allowed_service_cidr = "10.0.0.0/8"
+
+# ── Project ───────────────────────────────────────────────────────────────────
+
+project     = "guardrails"
+environment = "dev"
+
+# ── EC2 instance ──────────────────────────────────────────────────────────────
+
+# GPU instance type. g4dn.xlarge (1× T4, 4 vCPU, 16 GB RAM) is the minimum.
+# Upgrade to g5.xlarge (1× A10G) for higher throughput.
+instance_type  = "g4dn.xlarge"
+volume_size_gb = 100
+
+# EC2 key pair name for SSH access. Optional — leave empty to use SSM only.
+# key_pair_name = "my-key-pair"
+
+# ── Guardrails image ──────────────────────────────────────────────────────────
+
+# REQUIRED: Upload aisecurity-llm.tgz to this S3 bucket before running apply.
+image_s3_bucket = "my-guardrails-bucket"
+image_s3_key    = "aisecurity-llm.tgz"

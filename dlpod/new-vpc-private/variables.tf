@@ -58,7 +58,7 @@ variable "instance_type" {
   default     = "m5.2xlarge"
 }
 
-variable "key_name" {
+variable "key_pair_name" {
   description = "EC2 key pair name for SSH access (optional — omit to rely on AWS Systems Manager)"
   type        = string
   default     = null
@@ -94,7 +94,7 @@ variable "persona" {
   }
 }
 
-variable "licensekey" {
+variable "dlpod_licensekey" {
   description = "Netskope license key for the DLPoD appliance. Treated as a secret — never logged or included in terraform output."
   type        = string
   sensitive   = true

@@ -1,5 +1,21 @@
 # DevOps Reference
 
+## Terraform files in this template
+
+| File | Contents |
+|------|----------|
+| `main.tf` | Terraform config, providers, data sources, shared locals |
+| `vpc.tf` | VPC, subnets, IGW, NAT gateway, route tables, VPC endpoints, Route 53 |
+| `aig.tf` | Netskope appliance registration, Secrets Manager bootstrap, AIG IAM/SG/EC2 |
+| `guardrails.tf` | Guardrails IAM, security group, CloudWatch, EC2, readiness gate |
+| `dlpod.tf` | DLPoD TLS certificates, bootstrap config, IAM, security group, EC2, readiness gate |
+| `bastion.tf` | Troubleshooting bastion (temporary — delete post-POV) |
+| `variables.tf` | All input variable definitions |
+| `outputs.tf` | Terraform outputs |
+
+---
+
+
 ## AWS Services Used
 
 ### EC2

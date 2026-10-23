@@ -14,7 +14,7 @@ mock_provider "aws" {}
 variables {
   # Required bootstrap variables — use safe placeholder values for tests.
   persona     = "dlp-on-demand"
-  licensekey  = "TEST-LICENSE-KEY"
+  dlpod_licensekey  = "TEST-LICENSE-KEY"
   dns_primary = "10.0.0.2"
 
   appliance_name = "dlpod-test"

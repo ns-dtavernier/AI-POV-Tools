@@ -1,375 +1,87 @@
-# DLP On-Demand (DLPoD) — Zero-Touch Provisioning Reference
+# Netskope DLP On-Demand (DLPoD) — Terraform Deployment
 
-> **Terraform templates are coming.** This directory documents the DLPoD Zero-Touch
-> Provisioning (ZTP) bootstrap format in anticipation of the automated deployment templates,
-> which will be added once ZTP reaches general availability in a production DLPoD release.
-> Manual (OVA/ISO console) installs are unchanged — ZTP is a clean no-op when no
-> user-data is present.
+DLP On-Demand is the Netskope appliance that inspects AI traffic for sensitive data. The AI Gateway sends content to it over TLS and acts on the verdict. These templates deploy a DLPoD appliance on AWS with a single `terraform apply`. The appliance is zero-touch provisioned: Terraform generates its TLS certificates and configuration and hands them to the instance at first boot. No console or SSH steps are needed.
+
+> **Deploying the full stack?** Use the combined [`ai-services-all/new-vpc-public/`](../ai-services-all/new-vpc-public/README.md) template instead — it includes DLPoD and wires it to the AI Gateway for you. The templates here are for deploying DLPoD on its own, or as part of a [staged build](../STAGED-BUILD.md).
 
 ---
 
-## What is ZTP?
+## Which option should I use?
 
-Zero-Touch Provisioning lets you preconfigure a DLPoD appliance so it comes up ready to use — network, DNS, proxy, certificates, system settings, and persona — without any interactive login. You supply a JSON configuration file (`bootstrap.json`) through your cloud platform's cloud-init **user-data** channel. At first boot the appliance:
-
-1. cloud-init **caches** the user-data (it never executes it — all cloud-init execution modules are stripped from the appliance image).
-2. The `nsbootstrap` service reads, strictly validates, and applies the configuration.
-3. Pod installation (`nssetupdlpaas`) runs **after** base config is applied — the appliance never starts pod installation against an unconfigured network.
-4. At the console login, the setup wizard shows live progress and a "do not power off" warning until initialization completes.
-
----
-
-## Supported platforms
-
-| Platform | How to deliver `bootstrap.json` |
-|----------|----------------------------------|
-| **AWS EC2** | Instance **User data** (raw JSON) |
-| **Microsoft Azure / Hyper-V** | **User data** (read from IMDS). **Custom data is not supported.** |
-| **Google Cloud** | Instance metadata `user-data` (raw JSON) |
-| **OpenStack / KVM** | OpenStack user-data or a config-drive |
-| **VMware / ESXi / vSphere (OVF)** | `guestinfo.userdata` guest property — the appliance auto-unwraps double-encoded JSON |
-| **Generic seed ISO** | NoCloud seed containing `user-data` |
-
-**VMware/ESXi note:** VMware sometimes double-encodes `guestinfo.userdata` (wraps the JSON object as a JSON string). The appliance detects and unwraps this automatically — provide your JSON object as user-data without worrying about the encoding.
-
----
-
-## bootstrap.json schema
-
-`bootstrap.json` is a single JSON **object**. Any unknown top-level key causes the entire file to be rejected (fail-closed). Every section is optional — an absent or empty section is simply not applied.
-
-### Top-level keys
-
-| Key | Type | Purpose |
-|-----|------|---------|
-| `persona` | string | Appliance role: `dlp-on-demand` or `dspm` |
-| `dns` | object | DNS servers |
-| `interface` | object | IPv4 network configuration (static or DHCP) |
-| `management-plane` | object | Upstream proxy configuration |
-| `system` | object | Hostname, license key, banner, timezone, SSH settings |
-| `dlpaas` | object | Supply your own TLS server certificate (mutually exclusive with `request`) |
-| `request` | object | Generate a self-signed cert or CSR on the appliance (mutually exclusive with `dlpaas`) |
-
----
-
-### `persona`
-
-String. One of `dlp-on-demand` or `dspm`.
-
-- `dlp-on-demand` — standard DLP On-Demand persona.
-- `dspm` — Data Security Posture Management; the appliance updates its platform mode accordingly.
-
-> The appliance does **not** change the hostname based on persona — cloud-init owns the hostname on cloud instances. Set the hostname explicitly via `system.hostname` if required.
-
----
-
-### `dns`
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `primary` | string (IP) | Yes | Primary DNS server |
-| `secondary` | string (IP) | No | Applied only if non-empty |
-
----
-
-### `interface.v4`
-
-Configure **either** static **or** DHCP — they are mutually exclusive. Static is all-or-nothing: `ip`, `gw`, and `netmask` are all required together.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `static.enable` | bool | Truthy values: `true`, `"true"`, `"1"`, `"yes"`, non-zero int |
-| `static.ip` | string (IP) | Required when static enabled |
-| `static.gw` | string (IP) | Required when static enabled |
-| `static.netmask` | string | Dotted (`255.255.255.0`) or prefix length (`24`). Non-contiguous masks are rejected. |
-| `dhcp.enable` | bool | Mutually exclusive with static |
-
----
-
-### `management-plane.upstream-proxy-server`
-
-Pairing rules: `hostname` + `port` are all-or-nothing; `username` + `password` are all-or-nothing; credentials require a host+port. A `trusted-ca` may be supplied on its own.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `hostname` | string | Proxy host |
-| `port` | int | 1–65535 |
-| `username` | string | Optional; requires `password` |
-| `password` | string | **Secret** — redacted from the persisted record, never logged |
-| `trusted-ca` | PEM string | Must be a non-expired CA certificate with `basicConstraints CA:TRUE` |
-
----
-
-### `system`
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `hostname` | string | Appliance hostname |
-| `licensekey` | string | **Secret** — redacted from the persisted record, never logged |
-| `login-banner` | string (multi-line) | Pre-login banner text |
-| `timezone` | string (IANA) | e.g. `America/Los_Angeles`. An invalid name silently falls back to UTC. |
-| `metrics.debug` | bool | Enable/disable debug metrics. Omit to leave unchanged. |
-| `ssh-allowlist` | list of CIDR strings | e.g. `["10.20.0.0/16"]`. Empty list applies nothing. |
-| `ssh-public-keys` | list of `{key, user}` | `key` (PEM/OpenSSH public key, required), `user` (optional). Entries without `key` are skipped. |
-
----
-
-### `dlpaas` — supply your own server certificate
-
-> `dlpaas` and `request` are **mutually exclusive**. Include one, not both.
-
-All three fields are **mandatory together** — a partial set is skipped (not half-applied). All values are PEM strings.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `server-cert` | PEM | Server certificate. Must be non-expired and parseable. |
-| `server-key` | PEM | Private key. **Secret** — redacted from the persisted record, never logged. |
-| `server-intermediate-ca-chain` | PEM | Intermediate CA chain. Each cert must be non-expired. |
-
----
-
-### `request` — generate a certificate on the appliance
-
-> `dlpaas` and `request` are **mutually exclusive**. Include one, not both.
-
-Two sub-sections: `self-signed` (generates a self-signed cert) and `certificate-request` (generates a CSR; the CSR still needs external signing). **Both sub-sections are required together** — you cannot supply only one.
-
-All eight DN fields are mandatory in each sub-section.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `days` | int | Validity in days |
-| `country` | string | 2-letter country code |
-| `state` | string | State/province (spaces OK) |
-| `city` | string | City (spaces OK, e.g. `Santa Clara`) |
-| `organization` | string | Organization name (spaces OK) |
-| `organization-unit` | string | Org unit |
-| `common-name` | string | Certificate CN |
-| `email-address` | string | Contact email. **See Known Issues** — a hyphen in the local-part is currently rejected. |
-
----
-
-## Validation and fail-closed behavior
-
-The entire config is validated before anything is applied. The first failing check stops the run — the config is **never partially applied**.
-
-| Check | What is rejected | Example error |
-|-------|-----------------|---------------|
-| Is object | Non-object payload | `Bootstrap file must be a JSON object` |
-| Top-level keys | Any unrecognized key | `bootstrap.json has unknown top-level keys: ...` |
-| Persona | Invalid persona name | `Invalid persona '...' in bootstrap file (valid: dlp-on-demand, dspm)` |
-| Interface | static + dhcp both set; partial static; bad IP/gw/netmask | `interface v4: static and dhcp are mutually exclusive ...` |
-| Server certs | Partial cert set; expired or unparseable cert | `dlpaas server certificate config is incomplete: ...` |
-| Request certs | Partial DN field set | `request certificate config is incomplete: ...` |
-| Upstream proxy | Bad pairing; port out of range; non-CA or expired `trusted-ca` | `upstream-proxy-server: port ... is out of range (1-65535)` |
-
-Certificate content checks use OpenSSL (`x509 -checkend`) — if validation cannot be run, the config is rejected rather than applied.
-
----
-
-## Security model
-
-- **cloud-init is a data carrier only.** All executing cloud-init modules are stripped from the appliance image; user-data is treated purely as configuration data.
-- **Allowlist only.** Only the recognized top-level keys are honored; anything else rejects the whole file.
-- **Secrets are redacted.** `system.licensekey`, `management-plane.upstream-proxy-server.password`, and `dlpaas.server-key` are blanked in the persisted record (`bootstrap.json.done`) and are never written to logs.
-- **Least privilege.** The staged config copy is readable only by the appliance service account (mode `0640`). The main bootstrap process runs unprivileged as `nsadmin`.
-- **Run-once.** After a successful apply, the appliance writes a redacted record file and will not re-apply on later boots. To deliberately re-run ZTP, remove that record file and reboot (see Known Issues for the SSH key duplication caveat).
-- **IMDSv2 required** on AWS instances — blocks SSRF reads of metadata/user-data.
-
----
-
-## Worked examples
-
-### Minimal — DHCP + DNS + persona
-
-```json
-{
-  "persona": "dlp-on-demand",
-  "dns": { "primary": "8.8.8.8" },
-  "interface": { "v4": { "dhcp": { "enable": true } } }
-}
+```
+Do you already have a VPC with a private subnet that has outbound internet access (NAT)?
+├── Yes → existing-vpc/       Deploys DLPoD into your network. Also creates the private DNS
+│                              zone the AI Gateway needs to reach DLPoD by hostname.
+└── No  → new-vpc-private/    Creates a new VPC with DLPoD in a private subnet behind a NAT Gateway.
 ```
 
-### Full example — static IP, proxy, custom cert, SSH
+| Option | Directory | What gets created | Best for |
+|--------|-----------|-------------------|----------|
+| [Existing VPC](existing-vpc/README.md) | `existing-vpc/` | EC2 instance, security group, IAM role, TLS certificates, Route 53 private zone | Stage 2 of a staged build; joining a VPC that Guardrails already created |
+| [New VPC — private](new-vpc-private/README.md) | `new-vpc-private/` | VPC, public + private subnets, NAT Gateway, EC2 instance, security group, IAM role, TLS certificates | DLPoD on its own in a fresh account |
 
-```json
-{
-  "persona": "dlp-on-demand",
-  "dns": { "primary": "8.8.8.8", "secondary": "8.8.4.4" },
-  "interface": {
-    "v4": {
-      "static": {
-        "enable": true,
-        "ip": "10.20.30.40",
-        "gw": "10.20.30.1",
-        "netmask": "255.255.255.0"
-      },
-      "dhcp": { "enable": false }
-    }
-  },
-  "management-plane": {
-    "upstream-proxy-server": {
-      "hostname": "proxy.corp.example.com",
-      "port": "8080",
-      "username": "dlpod_proxy",
-      "password": "REPLACE_WITH_PROXY_PASSWORD",
-      "trusted-ca": "-----BEGIN CERTIFICATE-----\n<PROXY CA PEM>\n-----END CERTIFICATE-----\n"
-    }
-  },
-  "system": {
-    "hostname": "dlpod-appliance-01",
-    "licensekey": "REPLACE_WITH_LICENSE_KEY",
-    "login-banner": "Authorized access only. This system is monitored.\n",
-    "timezone": "America/Los_Angeles",
-    "metrics": { "debug": true },
-    "ssh-allowlist": ["10.20.0.0/16", "192.168.100.0/24"],
-    "ssh-public-keys": [
-      { "key": "ssh-ed25519 AAAA... admin@example", "user": "nsadmin" }
-    ]
-  },
-  "dlpaas": {
-    "server-cert": "-----BEGIN CERTIFICATE-----\n<SERVER CERT PEM>\n-----END CERTIFICATE-----\n",
-    "server-key": "-----BEGIN PRIVATE KEY-----\n<SERVER KEY PEM>\n-----END PRIVATE KEY-----\n",
-    "server-intermediate-ca-chain": "-----BEGIN CERTIFICATE-----\n<INTERMEDIATE CA PEM>\n-----END CERTIFICATE-----\n"
-  }
-}
-```
+DLPoD is never given a public IP. It is a back-end service that only the AI Gateway talks to.
 
-### Certificate alternative — generate on the appliance
-
-Use `request` **instead of** `dlpaas`. Both sub-sections (`self-signed` and `certificate-request`) are required together.
-
-```json
-{
-  "request": {
-    "self-signed": {
-      "days": "825",
-      "country": "US",
-      "state": "California",
-      "city": "Santa Clara",
-      "organization": "Netskope",
-      "organization-unit": "DLP",
-      "common-name": "appliance.dlpod.example",
-      "email-address": "dlpodadmin@example.com"
-    },
-    "certificate-request": {
-      "days": "825",
-      "country": "US",
-      "state": "California",
-      "city": "Santa Clara",
-      "organization": "Netskope",
-      "organization-unit": "DLP",
-      "common-name": "appliance.dlpod.example",
-      "email-address": "dlpodadmin@example.com"
-    }
-  }
-}
-```
+The two templates were written at different times and differ in a few defaults — for example the instance type (`c5d.4xlarge` in `existing-vpc/`, `m5.2xlarge` in `new-vpc-private/`) and whether a private DNS zone is created (only `existing-vpc/`). Each template's README lists its own variables; trust the README in the folder you are using.
 
 ---
 
-## Delivering user-data per platform
+## Prerequisites
 
-### AWS EC2
+| Requirement | How to get it |
+|-------------|---------------|
+| **Terraform ≥ 1.5** | [Download](https://developer.hashicorp.com/terraform/install) or `brew install terraform` |
+| **AWS CLI** signed in to the target account | `aws configure`, AWS SSO, or environment variables; check with `aws sts get-caller-identity` |
+| **DLPoD AMI ID for your region** | From Netskope. Both templates carry a built-in lookup for a handful of regions (see each README); for any other region set `dlpod_ami_id` yourself |
+| **DLPoD license key** | From Netskope. Set it as an environment variable: `export TF_VAR_dlpod_licensekey="…"` |
+
+No Netskope API token is needed — these templates do not call the Netskope API. The appliance is configured entirely from the file Terraform gives it at boot.
+
+Run `../scripts/preflight.sh dlpod/<option>` to check all of the above.
+
+---
+
+## What happens at first boot
+
+1. Terraform assembles a `bootstrap.json` (persona, license key, DNS, TLS certificate) from your `terraform.tfvars` and places it in the instance's EC2 user-data.
+2. The appliance's `nsbootstrap` service reads it, validates it strictly, and applies it. If anything is invalid it stops and reports rather than half-configuring.
+3. The DLP service installs (`nssetupdlpaas`). This takes roughly 5–10 minutes.
+4. The license key and other secrets are blanked from the record the appliance keeps on disk.
+
+`terraform apply` returns when the instance exists, which is before step 3 completes.
+
+### Checking it worked
+
+The appliance has no HTTP health endpoint you can poll from outside. From a shell on the appliance (SSM or SSH) run:
 
 ```bash
-aws ec2 run-instances --image-id ami-xxxx --instance-type ... \
-  --user-data file://bootstrap.json
+cat /opt/ns/states/nsbootstrap/progress.json          # progress and status
+cat /opt/ns/states/nsbootstrap/bootstrap.json.done    # what was applied (secrets blanked)
+journalctl -u nsbootstrap.service                     # service log
 ```
 
-### Microsoft Azure (User data — Custom data is NOT supported)
-
-```bash
-az vm create -g MyRG -n dlpod01 --image <image> \
-  --user-data bootstrap.json
-```
-
-### Google Cloud
-
-```bash
-gcloud compute instances create dlpod01 --image <image> \
-  --metadata-from-file user-data=bootstrap.json
-```
-
-### OpenStack / KVM
-
-```bash
-openstack server create --image <image> --flavor <flavor> \
-  --user-data bootstrap.json dlpod01
-```
-
-### VMware / ESXi (govc, `guestinfo.userdata`)
-
-```bash
-# Provide the JSON object as guestinfo.userdata (optionally base64-encoded).
-govc vm.change -vm dlpod01 \
-  -e guestinfo.userdata="$(cat bootstrap.json)" \
-  -e guestinfo.userdata.encoding="base64"
-```
+From the AI Gateway side, `curl -s --cacert <ca_cert_pem> https://dlp.aigw.internal/ -w "%{http_code}"` should return `404` once the service is up (the root path is simply not mapped). Details and failure modes: [`ai-services-all/new-vpc-public/docs/troubleshooting.md`](../ai-services-all/new-vpc-public/docs/troubleshooting.md) §DLPoD.
 
 ---
 
-## Verifying bootstrap
+## Connecting DLPoD to the AI Gateway
 
-At the console login, the setup wizard shows live bootstrap and pod-install progress. Success is reached when base config is applied and the persona is written; the appliance then proceeds to pod install.
-
-To check from the appliance:
+Both templates output the two values the AI Gateway needs:
 
 ```bash
-# Progress and status
-cat /opt/ns/states/nsbootstrap/progress.json
-
-# Redacted record of what was applied (secrets blanked)
-cat /opt/ns/states/nsbootstrap/bootstrap.json.done
-
-# Service log
-journalctl -u nsbootstrap.service
+terraform output -raw dlp_host       # e.g. https://dlp.aigw.internal
+terraform output -raw ca_cert_pem    # the CA certificate, safe to paste
 ```
 
-**Re-running ZTP:** After a successful apply the appliance will not re-apply on later boots. To deliberately re-run zero-touch config, remove the record file and reboot:
+In the combined stack these are wired automatically. In a staged build you paste them into the AIG template's `terraform.tfvars` as `dlp_host` and `dlp_ca_cert_pem` — see [`STAGED-BUILD.md`](../STAGED-BUILD.md).
 
-```bash
-rm /opt/ns/states/nsbootstrap/bootstrap.json.done
-reboot
-```
-
-> **Note:** SSH public keys are not idempotent on re-run — if you re-run ZTP with the same keys in `ssh-public-keys`, duplicate keys will be appended. Remove duplicates afterward via the appliance CLI if needed.
+**Why a hostname and not an IP.** The AI Gateway verifies the DLPoD certificate against the hostname in the URL. A bare IP fails that check even though the certificate also carries the IP. `existing-vpc/` therefore creates a private Route 53 zone so `dlp.aigw.internal` resolves inside the VPC. `new-vpc-private/` does not create DNS — if you start from it and will later add an AIG, set `system_hostname` and arrange resolution yourself.
 
 ---
 
-## Known issues and workarounds
+## Reference
 
-| Issue | Impact | Workaround |
-|-------|--------|------------|
-| **Hyphen in `email-address` rejected** | An email with a hyphen in the local-part (e.g. `dlpod-admin@example.com`) is rejected when generating a `request` certificate, failing the bootstrap. | Use an email address **without a hyphen** in the local-part (e.g. `dlpodadmin@example.com`). Dots and `+` are accepted; hyphens in the domain part are fine. |
-| **SSH public keys duplicated on re-run** | If you deliberately re-run ZTP by removing the record file, `ssh-public-keys` entries are appended again, creating duplicates. | Avoid re-running with the same keys, or remove duplicate keys afterward via the appliance CLI. |
-| **Invalid timezone falls back to UTC silently** | A `timezone` that is not a valid IANA name is not rejected; the appliance uses UTC and logs a warning. | Use an exact IANA timezone name (e.g. `America/Los_Angeles`, `Asia/Kolkata`). |
-
----
-
-## FAQ
-
-**Does ZTP affect manual OVA/ISO installs?** No. With no user-data, ZTP is a clean no-op and the normal interactive setup wizard runs.
-
-**Can I supply my own certificate instead of generating one?** Yes — use the `dlpaas` section (all three fields) to supply your own, or the `request` section to generate one on the appliance. These two methods are mutually exclusive: use one, not both. If you use `request`, you must include both `self-signed` and `certificate-request`.
-
-**Are my secrets stored in plaintext?** The license key, proxy password, and server private key are redacted from the persisted record (`bootstrap.json.done`) and are never written to logs.
-
-**Is it safe to reboot during initialization?** No — wait until the wizard reports completion. A persistent on-screen warning enforces this.
-
-**What happens if bootstrap fails?** The wizard shows the failing command, the error message, the log path, and support guidance, then drops to `nsshell` for manual recovery.
-
----
-
-## Terraform templates
-
-### Available now
-
-| Template | Path | Use when |
-|----------|------|----------|
-| **Existing VPC** | [`existing-vpc/`](existing-vpc/README.md) | Deploy DLPoD into an existing VPC as part of a staged build |
-| **Full stack** | [`../ai-services-all/new-vpc-public/`](../ai-services-all/new-vpc-public/README.md) | Deploy AIG + Guardrails + DLPoD together in a new VPC |
-
-The `existing-vpc/` template is designed for staged builds where you deploy Guardrails first, then DLPoD, then the AIG. It outputs the CA certificate and DLP host URL that the AIG template needs. See [staged build workflow](../ai-services-all/README.md#staged-build-deploying-components-in-order).
-
-The `bootstrap.json` schema documented above is embedded in both templates via EC2 user-data, following the zero-touch provisioning pattern.
+- [Existing VPC guide](existing-vpc/README.md)
+- [New VPC — private subnet guide](new-vpc-private/README.md)
+- [`bootstrap.json` zero-touch provisioning reference](docs/ztp-bootstrap-reference.md) — the full schema, worked examples, how to deliver it on Azure / GCP / VMware, known issues
+- [Troubleshooting](../ai-services-all/new-vpc-public/docs/troubleshooting.md) §DLPoD

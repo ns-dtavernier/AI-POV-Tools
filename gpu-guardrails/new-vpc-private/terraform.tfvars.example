@@ -1,0 +1,45 @@
+# Netskope AI Guardrails — new VPC, private subnet
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to terraform.tfvars and fill in the values marked REQUIRED.
+# All other values have working defaults and may be left as-is for most POVs.
+#
+# Full documentation: new-vpc-private/README.md
+
+# ── AWS region ────────────────────────────────────────────────────────────────
+
+aws_region        = "us-east-1"
+availability_zone = "us-east-1b"   # must be a valid AZ within aws_region — check with: aws ec2 describe-availability-zones --region YOUR_REGION
+
+# ── VPC and networking ────────────────────────────────────────────────────────
+# These CIDRs work for most POVs. Change them only if they overlap with
+# networks you need to peer or connect to this VPC.
+
+vpc_cidr            = "10.0.0.0/16"
+public_subnet_cidr  = "10.0.1.0/24"  # NAT Gateway only — no GPU instances here
+private_subnet_cidr = "10.0.2.0/24"  # GPU instance lives here
+
+# CIDRs allowed to reach the Guardrails service on TCP port 8080.
+# Restrict to the AIGW source CIDR or your corporate/VPN network range.
+# The instance has no public IP — 0.0.0.0/0 has no effect here.
+allowed_service_cidr = "10.0.0.0/8"
+
+# ── Project ───────────────────────────────────────────────────────────────────
+
+project     = "guardrails"
+environment = "dev"
+
+# ── EC2 instance ──────────────────────────────────────────────────────────────
+
+# GPU instance type. g4dn.xlarge (1× T4, 4 vCPU, 16 GB RAM) is the minimum.
+# Upgrade to g5.xlarge (1× A10G) for higher throughput.
+instance_type  = "g4dn.xlarge"
+volume_size_gb = 100
+
+# EC2 key pair name for SSH access. Optional — leave empty to use SSM only.
+# key_pair_name = "my-key-pair"
+
+# ── Guardrails image ──────────────────────────────────────────────────────────
+
+# REQUIRED: Upload aisecurity-llm.tgz to this S3 bucket before running apply.
+image_s3_bucket = "my-guardrails-bucket"
+image_s3_key    = "aisecurity-llm.tgz"
