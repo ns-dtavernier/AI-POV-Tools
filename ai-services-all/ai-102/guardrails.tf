@@ -200,7 +200,22 @@ resource "aws_instance" "guardrails" {
 
 resource "null_resource" "guardrails_ready" {
   triggers = {
-    instance_id = aws_instance.guardrails.id
+    instance_id    = aws_instance.guardrails.id
+    # Stored in triggers so the destroy-time provisioner can read them via
+    # self (destroy provisioners cannot reference other resources or variables).
+    parameter_name = "/${local.guardrails_name}/guardrails-ready"
+    region         = var.aws_region
+  }
+
+  # The readiness parameter is created by the instance at runtime, not by
+  # Terraform, so remove it on destroy to avoid leaving it behind.
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOF
+      aws ssm delete-parameter \
+          --name "${self.triggers.parameter_name}" \
+          --region ${self.triggers.region} 2>/dev/null || true
+    EOF
   }
 
   provisioner "local-exec" {
