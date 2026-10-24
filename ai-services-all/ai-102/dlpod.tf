@@ -83,7 +83,7 @@ resource "tls_locally_signed_cert" "dlpod" {
 locals {
   _dlpod_system = merge(
     {
-      licensekey = var.dlpod_licensekey
+      licensekey = var.netskope_onpremappliance_licensekey
     },
     var.dlpod_hostname != "" ? { hostname = var.dlpod_hostname } : {},
     var.dlpod_ssh_public_key != "" ? {
@@ -116,7 +116,7 @@ locals {
 # to aws_iam_role.dlpod if SSM Session Manager access is required).
 
 resource "aws_iam_role" "dlpod" {
-  name = "${var.dlpod_appliance_name}-role"
+  name = "${local.dlpod_name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -129,7 +129,7 @@ resource "aws_iam_role" "dlpod" {
 }
 
 resource "aws_iam_instance_profile" "dlpod" {
-  name = "${var.dlpod_appliance_name}-instance-profile"
+  name = "${local.dlpod_name}-instance-profile"
   role = aws_iam_role.dlpod.name
 }
 
@@ -139,7 +139,7 @@ resource "aws_iam_instance_profile" "dlpod" {
 # DLPoD. This mirrors the Guardrails SG pattern.
 
 resource "aws_security_group" "dlpod" {
-  name        = "${var.dlpod_appliance_name}-sg"
+  name        = "${local.dlpod_name}-sg"
   description = "Netskope DLP On-Demand appliance"
   vpc_id      = aws_vpc.this.id
 
@@ -167,7 +167,7 @@ resource "aws_security_group" "dlpod" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${var.dlpod_appliance_name}-sg" }
+  tags = { Name = "${local.dlpod_name}-sg" }
 }
 
 # ── DLPoD — EC2 Instance ──────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ resource "aws_instance" "dlpod" {
     http_put_response_hop_limit = 1
   }
 
-  tags = { Name = var.dlpod_appliance_name }
+  tags = { Name = local.dlpod_name }
 
   depends_on = [aws_nat_gateway.this]
 }

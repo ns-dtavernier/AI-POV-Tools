@@ -23,7 +23,7 @@
 | Internet Gateway | Required for public subnet routing |
 | VPC Endpoints (Interface) | SSM, SSMMessages, EC2Messages, CloudWatch Logs — keep management traffic on the AWS backbone, avoids NAT Gateway charges and latency for control plane operations |
 | VPC Endpoint (Gateway) | S3 — free, keeps Guardrails image download (~10 GB) off the NAT Gateway entirely |
-| Route 53 Private Hosted Zone | Resolves `dlp.aigw.internal` → DLPoD private IP within the VPC. Required because the AIG's Go TLS stack cannot verify certificates when connecting to a bare IP URL — it must connect by hostname |
+| Route 53 Private Hosted Zone | Resolves `dlp.aig.internal` → DLPoD private IP within the VPC. Required because the AIG's Go TLS stack cannot verify certificates when connecting to a bare IP URL — it must connect by hostname |
 
 ### IAM
 
@@ -43,7 +43,7 @@
 
 ### Secrets Manager
 
-The AIG bootstrap secret (`aig/prod/bootstrap`) stores:
+The AIG bootstrap secret (`aig/<aws_object_prefix>/bootstrap` by default) stores:
 
 ```json
 {
@@ -54,7 +54,7 @@ The AIG bootstrap secret (`aig/prod/bootstrap`) stores:
   },
   "dlp": {
     "certificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
-    "host": "https://dlp.aigw.internal"
+    "host": "https://dlp.aig.internal"
   }
 }
 ```
@@ -72,7 +72,7 @@ Terraform generates a two-tier certificate hierarchy for DLPoD:
 ```
 tls_self_signed_cert.dlpod_ca (CA:TRUE)
     └── tls_locally_signed_cert.dlpod (CA:FALSE, server_auth)
-            SANs: DNS:dlp.aigw.internal, IP:10.0.2.20
+            SANs: DNS:dlp.aig.internal, IP:10.0.2.20
 ```
 
 **Why two-tier:** DLPoD rejects CA:TRUE certificates in the `dlpaas.server-cert` field. The leaf cert must be signed by the CA, not self-signed.
@@ -93,8 +93,8 @@ The DLPoD TLS certificates are generated entirely within Terraform using the `tl
 2. **`tls_self_signed_cert.dlpod_ca`** — issues a self-signed CA certificate (`CA:TRUE`, `cert_signing`) valid for 1 year. This is the trust anchor the AIG uses to verify DLPoD.
 3. **`tls_private_key.dlpod`** — generates a 2048-bit RSA private key for the DLPoD server
 4. **`tls_cert_request.dlpod`** — creates a CSR with:
-   - `CN = var.dlpod_hostname` (default: `dlp.aigw.internal`)
-   - `DNS SAN = dlp.aigw.internal`
+   - `CN = var.dlpod_hostname` (default: `dlp.aig.internal`)
+   - `DNS SAN = dlp.aig.internal`
    - `IP SAN = 10.0.2.20` (var.dlpod_private_ip)
 5. **`tls_locally_signed_cert.dlpod`** — CA signs the CSR to produce the leaf server cert (`CA:FALSE`, `server_auth`) valid for 1 year
 
@@ -119,7 +119,7 @@ The leaf cert and private key go only to DLPoD:
      "ai_guardrails": { "host": "http://10.0.2.10:8080/invocations" },
      "dlp": {
        "certificate": "-----BEGIN CERTIFICATE-----\n<CA cert PEM>\n-----END CERTIFICATE-----\n",
-       "host": "https://dlp.aigw.internal"
+       "host": "https://dlp.aig.internal"
      }
    }
    ```
@@ -127,7 +127,7 @@ The leaf cert and private key go only to DLPoD:
 
 #### AIG first boot
 
-10. **EC2 user-data** contains only: `{ "bootstrap_secret": "aig/prod/bootstrap" }`
+10. **EC2 user-data** contains only: `{ "bootstrap_secret": "aig/<aws_object_prefix>/bootstrap" }`
 11. AIG calls `secretsmanager:GetSecretValue` using its IAM instance profile
 12. AIG uses `enrollment_token` to register with the Netskope tenant
 13. AIG configures Guardrails at `ai_guardrails.host`
@@ -137,24 +137,27 @@ The leaf cert and private key go only to DLPoD:
 
 ### Guardrails Bootstrap (Two-Phase)
 
-**Phase 1 — EC2 UserData (runs at first boot, triggers reboot) — observed ~15 min:**
-1. Install `awscli`, `curl`, `ubuntu-drivers-common` and apply OS upgrades (~5–10 min — Ubuntu 22.04 runs automatic package updates at first boot)
-2. Delete any stale `/<prefix>/guardrails-ready` SSM parameter from a previous deployment
-3. Install NVIDIA GPU driver (`ubuntu-drivers install` — selects correct version automatically) (~3–5 min)
-4. Write Phase 2 script to `/opt/guardrails-phase2.sh`
-5. Install and enable `guardrails-setup.service` systemd unit
-6. Reboot to activate the NVIDIA kernel module
+The instance uses `guardrails_ami_id` if set (a custom Ubuntu-based AMI with the NVIDIA driver, NVIDIA Container Toolkit, Docker and the LLM image pre-installed), otherwise stock Ubuntu 22.04. The userdata is idempotent: it checks each component, installs what is missing, upgrades what is present, and restarts the container only if something changed. The same script therefore works on either AMI; stock Ubuntu just takes the full install path.
 
-**Phase 2 — systemd service (runs after reboot) — observed ~15–20 min:**
-1. Verify NVIDIA driver loaded (`nvidia-smi`)
-2. Install NVIDIA Container Toolkit (~2 min)
-3. Install Docker CE (~1–2 min)
-4. Configure Docker NVIDIA runtime; verify GPU access with a test container
-5. Download `aisecurity-llm.tgz` (~15 GB) from S3 via VPC Gateway Endpoint (no NAT Gateway charge) — observed ~2 min at 100–130 MiB/s
-6. Load Docker image: `docker load -i /tmp/aisecurity-llm.tgz` — observed ~3–5 min
-7. Start container on port 8080 with GPU access and `--restart=unless-stopped`
-8. Poll `http://localhost:8080/ping` until `{"status":"Healthy"}`
-9. Write SSM Parameter `/<prefix>/guardrails-ready = healthy`
+**Phase 1 — EC2 UserData (runs at first boot):**
+1. Install `curl`, `jq`, `ubuntu-drivers-common` (and `awscli` if no `aws` CLI exists); apply OS upgrades (Ubuntu 22.04 runs automatic package updates at first boot, so apt waits on the dpkg lock)
+2. Delete any stale `/<prefix>/guardrails-ready` SSM parameter from a previous deployment
+3. Snapshot installed versions of the NVIDIA driver, NVIDIA Container Toolkit and Docker to `/var/lib/guardrails-setup/before.env`
+4. NVIDIA driver: if no apt driver package and `nvidia-smi` fails, run `ubuntu-drivers install`; if a driver package exists, `apt-get install --only-upgrade` it
+5. Write Phase 2 script to `/opt/guardrails-phase2.sh` and install/enable `guardrails-setup.service`
+6. Reboot **only if** the driver was installed/upgraded, `nvidia-smi` is not working, or `/var/run/reboot-required` exists; otherwise start Phase 2 immediately
+
+**Phase 2 — systemd service:**
+1. Wait for `nvidia-smi` (up to 2 min after a reboot); record whether the driver version changed
+2. NVIDIA Container Toolkit: add the apt repo if missing, then install/upgrade
+3. Docker: add the Docker CE repo if missing, then install/upgrade (if the AMI uses Ubuntu's `docker.io`, that package is upgraded instead)
+4. `nvidia-ctk runtime configure --runtime=docker`; restart the Docker daemon if its config changed or Docker was upgraded; verify GPU access with a test container
+5. LLM image: use a local image whose name contains `aisecurity`; download `aisecurity-llm.tgz` from S3 and `docker load` it **only if no local image exists**
+6. Container: if one exists for the image, set `--restart=unless-stopped` and `docker restart` it when the driver, toolkit, Docker, runtime config or image changed (otherwise `docker start`); if none exists, create `guardrails` on port 8080 with GPU access
+7. Poll `http://localhost:8080/ping` until `{"status":"Healthy"}`
+8. Write SSM Parameter `/<prefix>/guardrails-ready = healthy`
+
+Expect ~5–10 min with a current custom AMI and no reboot; up to ~30 min on stock Ubuntu (full install, image download from S3 and load).
 
 **Readiness gate:** `null_resource.guardrails_ready` deletes any stale parameter first, then polls every 30 seconds (up to 40 minutes). `terraform apply` blocks here until the parameter appears. **Observed total Phase 1 + Phase 2: ~30 minutes** on `g4dn.xlarge` in us-west-1.
 
@@ -176,7 +179,7 @@ DLPoD uses Netskope's `nsbootstrap.service` — a first-boot service that reads 
 | `persona` | `dlp-on-demand` | Activates DLP inspection mode |
 | `dns.primary` | VPC DNS resolver (`vpc_cidr + 2`) | Ensures DLPoD uses VPC DNS to resolve internal names |
 | `system.licensekey` | Netskope license key | Activates the appliance |
-| `system.hostname` | `dlp.aigw.internal` | Sets appliance hostname |
+| `system.hostname` | `dlp.aig.internal` | Sets appliance hostname |
 | `system.ssh-allowlist` | Public subnet CIDR | Restricts SSH access to the public subnet only |
 | `dlpaas.server-cert` | Leaf TLS cert (CA:FALSE) | The HTTPS certificate DLPoD presents |
 | `dlpaas.server-key` | Leaf private key (PKCS#8) | Private key for the TLS cert |
@@ -196,24 +199,24 @@ Note: IMDSv2 does not prevent processes running directly in the host network nam
 
 When the AIG enrolls and processes its bootstrap secret, it validates the DLPoD connection as follows:
 
-1. **Parse** `dlp.host` from the bootstrap secret → `https://dlp.aigw.internal`
-2. **Resolve** `dlp.aigw.internal` via VPC DNS → Route 53 private zone → `10.0.2.20`
+1. **Parse** `dlp.host` from the bootstrap secret → `https://dlp.aig.internal`
+2. **Resolve** `dlp.aig.internal` via VPC DNS → Route 53 private zone → `10.0.2.20`
 3. **Connect** to `10.0.2.20:443` via TCP
 4. **TLS handshake:** AIG presents no client cert; DLPoD presents its server cert chain
 5. **Certificate verification:** AIG uses `dlp.certificate` (the CA cert PEM) as the trust anchor
    - Verifies the server cert is signed by the CA
-   - Verifies the cert's DNS SAN includes `dlp.aigw.internal` (the hostname from the URL)
+   - Verifies the cert's DNS SAN includes `dlp.aig.internal` (the hostname from the URL)
    - Verifies validity period
-6. **Probe request:** AIG sends a POST to `https://dlp.aigw.internal/inspections/jobs`
+6. **Probe request:** AIG sends a POST to `https://dlp.aig.internal/inspections/jobs`
 7. **Success:** DLPoD responds → AIG marks the DLP service as configured
 
 **Why the hostname matters:** The AIG is written in Go. Go's `crypto/tls` package verifies TLS certificates by extracting the host from the connection URL and checking it against the cert's SANs. When the host is a bare IP address (e.g. `https://10.0.2.20`), the AIG's URL parsing returns an empty hostname string for verification, causing the error:
 
 ```
-x509: certificate is valid for dlp.aigw.internal, not
+x509: certificate is valid for dlp.aig.internal, not
 ```
 
-This occurs even though the cert has a valid IP SAN (`IP Address:10.0.2.20`). Using `https://dlp.aigw.internal` as the host causes Go to correctly verify against the DNS SAN, which succeeds.
+This occurs even though the cert has a valid IP SAN (`IP Address:10.0.2.20`). Using `https://dlp.aig.internal` as the host causes Go to correctly verify against the DNS SAN, which succeeds.
 
 ---
 

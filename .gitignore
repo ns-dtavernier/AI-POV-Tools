@@ -30,3 +30,6 @@ venv/
 
 # Curated customer packages
 /dist/
+
+# Notes
+*.scratch.txt

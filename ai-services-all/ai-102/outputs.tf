@@ -1,16 +1,21 @@
 # ── AIG outputs ───────────────────────────────────────────────────────────────
 
-output "appliance_id" {
+output "netskope_aig_appliance_id" {
   description = "Netskope AIG appliance UUID"
   value       = netskope_aig_appliance.this.id
 }
 
-output "aig_instance_id" {
+output "aig_aws_instance_id" {
   description = "EC2 instance ID of the AI Gateway"
   value       = aws_instance.aig.id
 }
 
-output "aig_public_ip" {
+output "aig_private_ip" {
+  description = "Private IP of the AI Gateway (public subnet)"
+  value       = aws_instance.aig.private_ip
+}
+
+output "aig_aws_eip_public_ip" {
   description = "Elastic IP assigned to the AI Gateway — this is the address clients connect to on port 443"
   value       = aws_eip.aig.public_ip
 }
@@ -22,12 +27,12 @@ output "bootstrap_secret_arn" {
 
 # ── Guardrails outputs ────────────────────────────────────────────────────────
 
-output "ai_guardrails_host" {
+output "guardrails_host_url" {
   description = "Guardrails host URL embedded in the AIG bootstrap secret. The AIG routes LLM inspection requests here."
   value       = "http://${var.guardrails_private_ip}:8080/invocations"
 }
 
-output "guardrails_instance_id" {
+output "guardrails_aws_instance_id" {
   description = "EC2 instance ID of the Guardrails GPU host"
   value       = aws_instance.guardrails.id
 }
@@ -66,7 +71,7 @@ output "nat_gateway_ip" {
 
 # ── DLPoD outputs ─────────────────────────────────────────────────────────────
 
-output "dlpod_instance_id" {
+output "dlpod_aws_instance_id" {
   description = "EC2 instance ID of the DLPoD appliance"
   value       = aws_instance.dlpod.id
 }
@@ -76,7 +81,7 @@ output "dlpod_private_ip" {
   value       = aws_instance.dlpod.private_ip
 }
 
-output "dlp_host" {
+output "dlp_host_url" {
   description = "DLP host URL configured in the AIG bootstrap secret — the AIG forwards DLP inspection traffic here"
   value       = "https://${var.dlpod_hostname}"
 }

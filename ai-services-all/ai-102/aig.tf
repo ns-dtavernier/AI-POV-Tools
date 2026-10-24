@@ -10,7 +10,7 @@
 # reading the bootstrap secret.
 
 resource "netskope_aig_appliance" "this" {
-  name = var.appliance_name
+  name = var.aig_netskope_name
   host = aws_eip.aig.public_ip
 
   ports = {
@@ -35,7 +35,7 @@ resource "netskope_aig_appliance_enrollment_token" "this" {
 # Route 53 resolves var.dlpod_hostname → var.dlpod_private_ip within the VPC.
 
 resource "aws_secretsmanager_secret" "aig_bootstrap" {
-  name                    = var.secret_name
+  name                    = local.secret_name
   description             = "Netskope AIG automated bootstrap — enrollment token and AI Guardrails config"
   recovery_window_in_days = 0
 }
@@ -58,7 +58,7 @@ resource "aws_secretsmanager_secret_version" "aig_bootstrap" {
 # ── AIG — IAM ─────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "aig" {
-  name = "${var.appliance_name}-role"
+  name = "${local.aig_name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -71,7 +71,7 @@ resource "aws_iam_role" "aig" {
 }
 
 resource "aws_iam_role_policy" "aig_read_secret" {
-  name = "${var.appliance_name}-read-bootstrap-secret"
+  name = "${local.aig_name}-read-bootstrap-secret"
   role = aws_iam_role.aig.id
 
   policy = jsonencode({
@@ -86,14 +86,14 @@ resource "aws_iam_role_policy" "aig_read_secret" {
 }
 
 resource "aws_iam_instance_profile" "aig" {
-  name = "${var.appliance_name}-instance-profile"
+  name = "${local.aig_name}-instance-profile"
   role = aws_iam_role.aig.name
 }
 
 # ── AIG — Security Group ──────────────────────────────────────────────────────
 
 resource "aws_security_group" "aig" {
-  name        = "${var.appliance_name}-sg"
+  name        = "${local.aig_name}-sg"
   description = "Netskope AI Gateway"
   vpc_id      = aws_vpc.this.id
 
@@ -113,7 +113,7 @@ resource "aws_security_group" "aig" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${var.appliance_name}-sg" }
+  tags = { Name = "${local.aig_name}-sg" }
 }
 
 # ── AIG — EC2 Instance ────────────────────────────────────────────────────────
@@ -122,6 +122,7 @@ resource "aws_instance" "aig" {
   ami                    = var.aig_ami_id
   instance_type          = var.aig_instance_type
   subnet_id              = aws_subnet.public.id
+  private_ip             = var.aig_private_ip
   iam_instance_profile   = aws_iam_instance_profile.aig.name
   vpc_security_group_ids = [aws_security_group.aig.id]
   key_name               = var.aig_key_name
@@ -130,7 +131,7 @@ resource "aws_instance" "aig" {
     bootstrap_secret = aws_secretsmanager_secret.aig_bootstrap.name
   })
 
-  tags = { Name = var.appliance_name }
+  tags = { Name = local.aig_name }
 
   depends_on = [
     aws_secretsmanager_secret_version.aig_bootstrap,

@@ -9,7 +9,7 @@
 # ── IAM ───────────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "bastion" {
-  name = "bastion-role"
+  name = "${local.bastion_name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -27,14 +27,14 @@ resource "aws_iam_role_policy_attachment" "bastion_ssm" {
 }
 
 resource "aws_iam_instance_profile" "bastion" {
-  name = "bastion-instance-profile"
+  name = "${local.bastion_name}-instance-profile"
   role = aws_iam_role.bastion.name
 }
 
 # ── Security Group ────────────────────────────────────────────────────────────
 
 resource "aws_security_group" "bastion" {
-  name        = "bastion-sg"
+  name        = "${local.bastion_name}-sg"
   description = "Troubleshooting bastion - SSM access, full VPC egress"
   vpc_id      = aws_vpc.this.id
 
@@ -46,7 +46,7 @@ resource "aws_security_group" "bastion" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "bastion-sg" }
+  tags = { Name = "${local.bastion_name}-sg" }
 }
 
 # Allow bastion to reach DLPoD on port 443 (TLS cert check, curl)
@@ -121,6 +121,7 @@ resource "aws_instance" "bastion" {
   ami                    = data.aws_ami.ubuntu_22_04.id
   instance_type          = "t3.small"
   subnet_id              = aws_subnet.public.id
+  private_ip             = var.bastion_private_ip
   iam_instance_profile   = aws_iam_instance_profile.bastion.name
   vpc_security_group_ids = [aws_security_group.bastion.id]
 
@@ -142,7 +143,7 @@ resource "aws_instance" "bastion" {
     http_put_response_hop_limit = 1
   }
 
-  tags = { Name = "pov-bastion" }
+  tags = { Name = local.bastion_name }
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
@@ -150,6 +151,11 @@ resource "aws_instance" "bastion" {
 output "bastion_instance_id" {
   description = "Bastion instance ID — use with: aws ssm start-session --target <id> --region <region>"
   value       = aws_instance.bastion.id
+}
+
+output "bastion_private_ip" {
+  description = "Private IP of the bastion (public subnet)"
+  value       = aws_instance.bastion.private_ip
 }
 
 output "bastion_ssm_connect_command" {

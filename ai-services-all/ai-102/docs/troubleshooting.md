@@ -40,7 +40,7 @@ CMDID=$(aws ssm send-command \
   --region YOUR_REGION \
   --instance-ids $(terraform output -raw guardrails_instance_id) \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["echo === Phase1 ===; tail -3 /var/log/user-data.log 2>/dev/null; echo === Phase2 ===; tail -3 /var/log/guardrails-phase2.log 2>/dev/null; echo === Docker ===; docker ps 2>/dev/null | head -3 || echo no-docker; echo === SSM param ===; aws ssm get-parameter --name /guardrails-dev/guardrails-ready --region YOUR_REGION --query Parameter.Value --output text 2>/dev/null || echo not-set"]' \
+  --parameters 'commands=["echo === Phase1 ===; tail -3 /var/log/user-data.log 2>/dev/null; echo === Phase2 ===; tail -3 /var/log/guardrails-phase2.log 2>/dev/null; echo === Docker ===; docker ps 2>/dev/null | head -3 || echo no-docker; echo === SSM param ===; aws ssm get-parameter --name /YOUR_PREFIX-guardrails/guardrails-ready --region YOUR_REGION --query Parameter.Value --output text 2>/dev/null || echo not-set"]' \
   --query Command.CommandId --output text)
 sleep 12
 aws ssm get-command-invocation \
@@ -60,7 +60,7 @@ sudo tail -f /var/log/guardrails-phase2.log  # Phase 2
 
 **Symptom:** `/var/log/user-data.log` has only 1–2 lines and stops at `cloud-init status --wait` or `apt-get install` with `Unable to acquire the dpkg frontend lock`.
 
-**Root cause:** Ubuntu 22.04 cloud images run `apt-daily-upgrade` automatically at first boot. The userdata template uses `apt-get -o DPkg::Lock::Timeout=300` to wait up to 5 minutes for the lock — this should resolve on its own.
+**Root cause:** Ubuntu cloud images (stock or custom AMI) run `apt-daily-upgrade` automatically at first boot. The userdata template uses `apt-get -o DPkg::Lock::Timeout=300` to wait up to 5 minutes for the lock — this should resolve on its own.
 
 **If the instance appears completely stuck** (SSM reachable but log not growing after 15+ minutes):
 ```bash
@@ -83,7 +83,7 @@ aws ssm get-command-invocation --region YOUR_REGION \
 
 - NAT Gateway not yet ready (instance created too quickly after NAT GW)
 - S3 bucket in wrong region — image download will fail silently
-- `image_s3_bucket` or `image_s3_key` typo in tfvars
+- `guardrails_llm_image_s3_bucket` or `guardrails_llm_image_s3_key` typo in tfvars
 
 ### Phase 2 stalled (Docker / image load)
 
@@ -112,7 +112,7 @@ If `terraform apply` passes the Guardrails readiness gate instantly on a fresh d
 
 ```bash
 aws ssm delete-parameter \
-  --name "/guardrails-dev/guardrails-ready" \
+  --name "/YOUR_PREFIX-guardrails/guardrails-ready" \
   --region YOUR_REGION
 terraform apply  # re-run; gate will now wait properly
 ```
@@ -142,10 +142,10 @@ openssl s_client -connect 10.0.2.20:443 -showcerts </dev/null 2>/dev/null \
 
 Expected output:
 ```
-subject=O=Netskope POV, CN=dlp.aigw.internal
+subject=O=Netskope POV, CN=dlp.aig.internal
 issuer=O=Netskope POV, CN=Netskope POV DLPoD CA
 X509v3 Subject Alternative Name:
-    DNS:dlp.aigw.internal, IP Address:10.0.2.20
+    DNS:dlp.aig.internal, IP Address:10.0.2.20
 ```
 
 If the issuer is not `Netskope POV DLPoD CA`, DLPoD is serving its built-in cert — the bootstrap dlpaas section was not applied.
@@ -161,7 +161,7 @@ curl -sk --max-time 5 https://10.0.2.20/ -w "%{http_code}"
 
 # With CA cert verification
 aws secretsmanager get-secret-value \
-  --secret-id aig/prod/bootstrap \
+  --secret-id aig/YOUR_PREFIX/bootstrap \
   --region YOUR_REGION \
   --query SecretString \
   --output text \
@@ -190,23 +190,23 @@ sudo cat /var/log/aig-bootstrap.log
 
 Error pattern:
 ```
-x509: certificate is valid for dlp.aigw.internal, not
+x509: certificate is valid for dlp.aig.internal, not
 ```
 
 **Cause:** The `dlp.host` in the bootstrap secret is a bare IP (`https://10.0.2.20`). The AIG's Go TLS stack cannot extract a hostname from an IP URL, so it validates against an empty string.
 
-**Fix:** `dlp.host` must use the hostname (`https://dlp.aigw.internal`) with Route 53 resolving it to the DLPoD private IP. This is the current configuration — if you see this error, the secret predates the Route 53 fix.
+**Fix:** `dlp.host` must use the hostname (`https://dlp.aig.internal`) with Route 53 resolving it to the DLPoD private IP. This is the current configuration — if you see this error, the secret predates the Route 53 fix.
 
 ```bash
 # Verify current secret content
 aws secretsmanager get-secret-value \
-  --secret-id aig/prod/bootstrap \
+  --secret-id aig/YOUR_PREFIX/bootstrap \
   --region YOUR_REGION \
   --query SecretString \
   --output text | python3 -m json.tool | grep '"host"'
 
 # Should show:
-#   "host": "https://dlp.aigw.internal"   ← correct
+#   "host": "https://dlp.aig.internal"   ← correct
 #   "host": "https://10.0.2.20"           ← wrong, rebuild needed
 ```
 

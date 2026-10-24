@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.9"
 
   required_providers {
     aws = {
@@ -23,13 +23,21 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+  # dtavernier - added profile to support aws login
+  profile = "terraform-aws"
 
   default_tags {
-    tags = {
-      Project     = var.project
-      Environment = var.environment
-      ManagedBy   = "Terraform"
-    }
+    tags = merge(
+      {
+        ManagedBy       = "Terraform"
+        owner           = var.aws_tag_owner
+        purpose         = var.aws_tag_purpose
+        terminate_after = var.aws_tag_terminate_after
+      },
+      # Optional tags are omitted when unset or empty
+      var.aws_tag_project != null && var.aws_tag_project != "" ? { project = var.aws_tag_project } : {},
+      var.aws_tag_description != null && var.aws_tag_description != "" ? { description = var.aws_tag_description } : {},
+    )
   }
 }
 
@@ -69,7 +77,12 @@ data "aws_ami" "ubuntu_22_04" {
 # ── Shared locals ─────────────────────────────────────────────────────────────
 
 locals {
-  guardrails_prefix = "${var.project}-${var.environment}"
-  # Extract the parent zone from dlpod_hostname (e.g. "dlp.aigw.internal" → "aigw.internal")
+  aig_name        = "${var.aws_object_prefix}-aig"
+  guardrails_name = "${var.aws_object_prefix}-guardrails"
+  dlpod_name      = "${var.aws_object_prefix}-dlpod"
+  bastion_name    = "${var.aws_object_prefix}-bastion"
+  secret_name     = coalesce(var.secret_name, "aig/${var.aws_object_prefix}/bootstrap")
+
+  # Extract the parent zone from dlpod_hostname (e.g. "dlp.aig.internal" → "aig.internal")
   dlpod_dns_zone = join(".", slice(split(".", var.dlpod_hostname), 1, length(split(".", var.dlpod_hostname))))
 }
