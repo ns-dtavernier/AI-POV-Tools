@@ -281,12 +281,24 @@ else
 fi
 
 # ---- Wait up to 10 minutes for the service to become healthy ----
-ATTEMPTS=0
-until curl -sf http://localhost:8080/ping | grep -q Healthy; do
-  ATTEMPTS=$(( $${ATTEMPTS} + 1 ))
-  [ "$${ATTEMPTS}" -ge 60 ] && break
-  sleep 10
-done
+# Returns 0 as soon as /ping reports Healthy, 1 if the timeout expires.
+wait_healthy() {
+  local attempts=0
+  until curl -sf http://localhost:8080/ping | grep -q Healthy; do
+    attempts=$(( attempts + 1 ))
+    [ "$attempts" -ge 60 ] && return 1
+    sleep 10
+  done
+}
+
+if ! wait_healthy; then
+  # Restart the container once and give it another 10 minutes. The container
+  # is looked up again because the create branch above does not set CONTAINER_ID.
+  CONTAINER_ID=$(docker ps -aq --filter "ancestor=$${LOCAL_IMAGE}" | head -1)
+  echo "$(ts) WARNING: Guardrails not healthy after 10 minutes; restarting container $${CONTAINER_ID} once."
+  docker restart "$CONTAINER_ID" || echo "$(ts) WARNING: docker restart failed."
+  wait_healthy || true
+fi
 
 # ---- Log final health status and signal readiness ----
 if curl -sf http://localhost:8080/ping | grep -q Healthy; then
@@ -298,7 +310,8 @@ if curl -sf http://localhost:8080/ping | grep -q Healthy; then
     --overwrite \
     --region ${aws_region}
 else
-  echo "$(ts) WARNING: Guardrails service did not become healthy within 10-minute timeout." \
+  echo "$(ts) WARNING: Guardrails service did not become healthy within 10 minutes," \
+    "even after one container restart (20 minutes total)." \
     "Container may still be starting. Re-check with: curl http://localhost:8080/ping"
 fi
 PHASE2MARKER
