@@ -115,6 +115,17 @@ resource "aws_security_group_rule" "aig_ssh_from_bastion" {
   description              = "AIG SSH from bastion (troubleshooting)"
 }
 
+# Allow bastion to reach AIG on port 8443 (configuration API)
+resource "aws_security_group_rule" "aig_config_api_from_bastion" {
+  type                     = "ingress"
+  from_port                = 8443
+  to_port                  = 8443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.aig.id
+  source_security_group_id = aws_security_group.bastion.id
+  description              = "AIG configuration API from bastion (certificate setup)"
+}
+
 # ── EC2 Instance ──────────────────────────────────────────────────────────────
 
 resource "aws_instance" "bastion" {
