@@ -1,6 +1,6 @@
 # Remote State
 
-Terraform state for this template contains TLS private keys (the DLPoD CA and leaf certificate). Store it remotely with encryption at rest.
+Terraform state for this template contains TLS private keys (the lab root CA and the DLPoD leaf certificate). Store it remotely with encryption at rest.
 
 ## S3 backend with KMS encryption
 

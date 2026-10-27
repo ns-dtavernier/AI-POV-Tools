@@ -2,13 +2,15 @@
 # DLP On-Demand (DLPoD)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── TLS: DLPoD CA + server certificate ───────────────────────────────────────
+# ── TLS: DLPoD server certificate ────────────────────────────────────────────
 #
-# DLPoD rejects CA:TRUE certs in dlpaas.server-cert. A proper two-tier
-# hierarchy is required:
+# DLPoD rejects CA:TRUE certs in dlpaas.server-cert, so the server cert must be
+# a leaf signed by a CA. The CA is the shared lab root CA from ca.tf (generated
+# with openssl, or supplied via ca_existing_signing_key_local_path); the AIG
+# CSR is signed by the same CA. There is no intermediate CA: the leaf is signed
+# directly by the root.
 #
-#   tls_self_signed_cert.dlpod_ca  — self-signed CA (CA:TRUE, cert_signing)
-#   tls_locally_signed_cert.dlpod  — server cert signed by CA (CA:FALSE, server_auth)
+#   tls_locally_signed_cert.dlpod  — server cert signed by the CA (CA:FALSE, server_auth)
 #
 # Bootstrap mapping:
 #   dlpaas.server-cert                  → leaf server cert (CA:FALSE)
@@ -16,42 +18,27 @@
 #   dlpaas.server-intermediate-ca-chain → CA cert
 #   dlp.certificate in AIG secret       → CA cert (verifies DLPoD's TLS chain)
 #
+# Certificate subject, key and validity come from the dlpod_cert_* variables.
+#
 # Private key material lives in Terraform state — use S3 remote state with
 # SSE-KMS encryption (see backend.hcl.example) to protect it at rest.
 
-resource "tls_private_key" "dlpod_ca" {
-  algorithm = "RSA"
-  rsa_bits  = 2048
-}
-
-resource "tls_self_signed_cert" "dlpod_ca" {
-  private_key_pem = tls_private_key.dlpod_ca.private_key_pem
-
-  subject {
-    common_name  = "Netskope POV DLPoD CA"
-    organization = "Netskope POV"
-  }
-
-  validity_period_hours = 8760
-  is_ca_certificate     = true
-
-  allowed_uses = [
-    "cert_signing",
-    "crl_signing",
-  ]
-}
-
 resource "tls_private_key" "dlpod" {
-  algorithm = "RSA"
-  rsa_bits  = 2048
+  algorithm = var.dlpod_cert_key_algorithm
+  rsa_bits  = var.dlpod_cert_rsa_bits
 }
 
 resource "tls_cert_request" "dlpod" {
   private_key_pem = tls_private_key.dlpod.private_key_pem
 
   subject {
-    common_name  = var.dlpod_hostname
-    organization = "Netskope POV"
+    # Defaults to dlpod_hostname, which is always also the DNS SAN below.
+    common_name         = coalesce(var.dlpod_cert_common_name, var.dlpod_hostname)
+    organization        = var.dlpod_cert_organization
+    organizational_unit = var.dlpod_cert_organization_unit
+    country             = var.dlpod_cert_country
+    province            = var.dlpod_cert_state
+    locality            = var.dlpod_cert_city
   }
 
   dns_names    = [var.dlpod_hostname]
@@ -60,10 +47,10 @@ resource "tls_cert_request" "dlpod" {
 
 resource "tls_locally_signed_cert" "dlpod" {
   cert_request_pem   = tls_cert_request.dlpod.cert_request_pem
-  ca_private_key_pem = tls_private_key.dlpod_ca.private_key_pem
-  ca_cert_pem        = tls_self_signed_cert.dlpod_ca.cert_pem
+  ca_private_key_pem = data.local_sensitive_file.ca_key.content
+  ca_cert_pem        = data.local_file.ca_cert.content
 
-  validity_period_hours = 8760
+  validity_period_hours = var.dlpod_cert_validity_period_hours
   is_ca_certificate     = false
 
   allowed_uses = [
@@ -104,7 +91,7 @@ locals {
     dlpaas = {
       "server-cert"                  = tls_locally_signed_cert.dlpod.cert_pem
       "server-key"                   = tls_private_key.dlpod.private_key_pem_pkcs8
-      "server-intermediate-ca-chain" = tls_self_signed_cert.dlpod_ca.cert_pem
+      "server-intermediate-ca-chain" = data.local_file.ca_cert.content
     }
   }
 }

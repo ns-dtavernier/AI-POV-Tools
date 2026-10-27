@@ -67,15 +67,15 @@ Log group `/<project>-<environment>/guardrails` with 30-day retention captures G
 
 ### TLS (Terraform `tls` provider)
 
-Terraform generates a two-tier certificate hierarchy for DLPoD:
+DLPoD uses a root-and-leaf hierarchy (no intermediate CA). The root is the lab root CA from `ca.tf` — the same CA that signs the AIG certificate:
 
 ```
-tls_self_signed_cert.dlpod_ca (CA:TRUE)
+lab root CA (CA:TRUE; openssl-generated or supplied via ca_existing_signing_key_local_path)
     └── tls_locally_signed_cert.dlpod (CA:FALSE, server_auth)
             SANs: DNS:dlp.aig.internal, IP:10.0.2.20
 ```
 
-**Why two-tier:** DLPoD rejects CA:TRUE certificates in the `dlpaas.server-cert` field. The leaf cert must be signed by the CA, not self-signed.
+**Why a separate leaf:** DLPoD rejects CA:TRUE certificates in the `dlpaas.server-cert` field. The leaf cert must be signed by the CA, not self-signed.
 
 **Where private keys live:** In Terraform state. Use S3 remote state with SSE-KMS encryption. See deployment guide for backend config.
 
@@ -87,16 +87,15 @@ tls_self_signed_cert.dlpod_ca (CA:TRUE)
 
 #### Certificate generation (Terraform apply — before any EC2 is created)
 
-The DLPoD TLS certificates are generated entirely within Terraform using the `tls` provider. No external CA or manual cert step is required.
+The DLPoD server certificate is signed within Terraform by the lab root CA from `ca.tf` (generated locally with `openssl` unless `ca_existing_signing_key_local_path` is set). The CA certificate is the trust anchor the AIG uses to verify DLPoD.
 
-1. **`tls_private_key.dlpod_ca`** — generates a 2048-bit RSA private key for the CA
-2. **`tls_self_signed_cert.dlpod_ca`** — issues a self-signed CA certificate (`CA:TRUE`, `cert_signing`) valid for 1 year. This is the trust anchor the AIG uses to verify DLPoD.
-3. **`tls_private_key.dlpod`** — generates a 2048-bit RSA private key for the DLPoD server
-4. **`tls_cert_request.dlpod`** — creates a CSR with:
-   - `CN = var.dlpod_hostname` (default: `dlp.aig.internal`)
-   - `DNS SAN = dlp.aig.internal`
+1. **`tls_private_key.dlpod`** — generates the RSA private key for the DLPoD server (`dlpod_cert_rsa_bits`, default 2048)
+2. **`tls_cert_request.dlpod`** — creates a CSR with:
+   - `CN = var.dlpod_cert_common_name` (default: `var.dlpod_hostname`, itself `dlp.aig.internal` by default)
+   - optional O, OU, C, ST, L from the `dlpod_cert_*` variables
+   - `DNS SAN = dlp.aig.internal` (var.dlpod_hostname)
    - `IP SAN = 10.0.2.20` (var.dlpod_private_ip)
-5. **`tls_locally_signed_cert.dlpod`** — CA signs the CSR to produce the leaf server cert (`CA:FALSE`, `server_auth`) valid for 1 year
+3. **`tls_locally_signed_cert.dlpod`** — the lab root CA signs the CSR to produce the leaf server cert (`CA:FALSE`, `server_auth`) valid for `dlpod_cert_validity_period_hours` (default 2160, 90 days)
 
 The CA cert PEM is then split across two consumers:
 - → `aws_secretsmanager_secret_version.aig_bootstrap` as `dlp.certificate` (AIG uses this to verify DLPoD's TLS)
@@ -249,7 +248,7 @@ The readiness gates (`null_resource.guardrails_ready`, `null_resource.dlpod_read
 ### Sensitive Values in State
 
 The Terraform state file contains:
-- DLPoD TLS private keys (`tls_private_key.dlpod`, `tls_private_key.dlpod_ca`)
+- DLPoD TLS private key (`tls_private_key.dlpod`) and the lab root CA private key (read from `lab-root-ca-key.pem` or `ca_existing_signing_key_local_path`)
 - The AIG enrollment token
 - The DLPoD license key
 

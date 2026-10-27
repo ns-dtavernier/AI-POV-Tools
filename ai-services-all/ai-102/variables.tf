@@ -232,6 +232,28 @@ variable "ca_new_addext" {
   ]
 }
 
+variable "ca_new_algorithm" {
+  description = "Key algorithm of the new root CA. Only RSA is supported. Only used when ca_existing_signing_key_local_path is blank."
+  type        = string
+  default     = "RSA"
+
+  validation {
+    condition     = var.ca_new_algorithm == "RSA"
+    error_message = "ca_new_algorithm must be RSA (the only supported algorithm)."
+  }
+}
+
+variable "ca_new_rsa_bits" {
+  description = "RSA key size in bits of the new root CA: 2048, 3072 or 4096. Only used when ca_existing_signing_key_local_path is blank."
+  type        = number
+  default     = 2048
+
+  validation {
+    condition     = contains([2048, 3072, 4096], var.ca_new_rsa_bits)
+    error_message = "ca_new_rsa_bits must be one of: 2048, 3072, 4096."
+  }
+}
+
 variable "ca_new_days" {
   description = "Validity in days of the new root CA certificate (openssl req -days). Only used when ca_existing_signing_key_local_path is blank."
   type        = number
@@ -245,17 +267,9 @@ variable "ca_new_days" {
 
 # ── AIG - Cert ────────────────────────────────────────────────────────────────
 # Subject and key settings for the certificate whose CSR the AIG generates (to be
-# signed by the signing CA above). Optional fields left null are omitted.
-
-variable "aig_cert_common_name" {
-  description = "Certificate common name (CN), 1-256 characters. Required. For the AIG this is typically the DNS name clients use to reach it, e.g. the Elastic IP's ec2-<ip-with-dashes>.<region>.compute.amazonaws.com name."
-  type        = string
-
-  validation {
-    condition     = length(var.aig_cert_common_name) >= 1 && length(var.aig_cert_common_name) <= 256
-    error_message = "aig_cert_common_name is required and must be 1-256 characters."
-  }
-}
+# signed by the signing CA above). The common name (CN) is not configurable: it is
+# always the AIG's AWS-generated public DNS name (local.aig_fqdn, output aig_fqdn).
+# Optional fields left null are omitted.
 
 variable "aig_cert_organization" {
   description = "Optional. Organization name (O), up to 256 characters."
@@ -353,6 +367,111 @@ variable "aig_cert_key_curve" {
   validation {
     condition     = var.aig_cert_key_curve == null ? true : contains(["P256", "P384", "P521"], var.aig_cert_key_curve)
     error_message = "aig_cert_key_curve must be one of: P256, P384, P521."
+  }
+}
+
+# ── DLPoD - Cert ──────────────────────────────────────────────────────────────
+# Subject, key and validity of the DLPoD server certificate, signed by the
+# signing CA above and installed through the DLPoD bootstrap. The DNS SAN is
+# always dlpod_hostname and the IP SAN dlpod_private_ip. Optional fields left
+# null are omitted from the subject.
+
+variable "dlpod_cert_common_name" {
+  description = "Optional. Certificate common name (CN), up to 256 characters. Defaults to dlpod_hostname."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.dlpod_cert_common_name == null ? true : length(var.dlpod_cert_common_name) <= 256
+    error_message = "dlpod_cert_common_name must be at most 256 characters."
+  }
+}
+
+variable "dlpod_cert_organization" {
+  description = "Optional. Organization name (O), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.dlpod_cert_organization == null ? true : length(var.dlpod_cert_organization) <= 256
+    error_message = "dlpod_cert_organization must be at most 256 characters."
+  }
+}
+
+variable "dlpod_cert_organization_unit" {
+  description = "Optional. Organizational unit (OU), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.dlpod_cert_organization_unit == null ? true : length(var.dlpod_cert_organization_unit) <= 256
+    error_message = "dlpod_cert_organization_unit must be at most 256 characters."
+  }
+}
+
+variable "dlpod_cert_country" {
+  description = "Optional. Two-letter country code (C), exactly 2 alphabetic characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.dlpod_cert_country == null || can(regex("^[A-Za-z]{2}$", var.dlpod_cert_country))
+    error_message = "dlpod_cert_country must be exactly 2 alphabetic characters (e.g. US)."
+  }
+}
+
+variable "dlpod_cert_state" {
+  description = "Optional. State or province (ST), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.dlpod_cert_state == null ? true : length(var.dlpod_cert_state) <= 256
+    error_message = "dlpod_cert_state must be at most 256 characters."
+  }
+}
+
+variable "dlpod_cert_city" {
+  description = "Optional. City or locality (L), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.dlpod_cert_city == null ? true : length(var.dlpod_cert_city) <= 256
+    error_message = "dlpod_cert_city must be at most 256 characters."
+  }
+}
+
+variable "dlpod_cert_key_algorithm" {
+  description = "Private key algorithm of the DLPoD server certificate. Only RSA is supported."
+  type        = string
+  default     = "RSA"
+
+  validation {
+    condition     = var.dlpod_cert_key_algorithm == "RSA"
+    error_message = "dlpod_cert_key_algorithm must be RSA (the only supported algorithm)."
+  }
+}
+
+variable "dlpod_cert_rsa_bits" {
+  description = "RSA key size in bits of the DLPoD server certificate: 2048, 3072 or 4096."
+  type        = number
+  default     = 2048
+
+  validation {
+    condition     = contains([2048, 3072, 4096], var.dlpod_cert_rsa_bits)
+    error_message = "dlpod_cert_rsa_bits must be one of: 2048, 3072, 4096."
+  }
+}
+
+variable "dlpod_cert_validity_period_hours" {
+  description = "Validity of the DLPoD server certificate in hours (2160 = 90 days). Keep it shorter than the signing CA's validity (ca_new_days), or the leaf outlives its CA."
+  type        = number
+  default     = 2160
+
+  validation {
+    condition     = var.dlpod_cert_validity_period_hours >= 1 && var.dlpod_cert_validity_period_hours == floor(var.dlpod_cert_validity_period_hours)
+    error_message = "dlpod_cert_validity_period_hours must be a positive whole number."
   }
 }
 
@@ -516,7 +635,7 @@ variable "dlpod_persona" {
 }
 
 variable "dlpod_hostname" {
-  description = "Hostname used as the TLS certificate CN and DNS SAN for the DLPoD server cert. Does not need to resolve in DNS — the AIG connects by IP (dlpod_private_ip)."
+  description = "Hostname used as the DNS SAN (and, unless dlpod_cert_common_name is set, the CN) of the DLPoD server cert. Does not need to resolve in DNS — the AIG connects by IP (dlpod_private_ip)."
   type        = string
   default     = "dlp.aig.internal"
 }

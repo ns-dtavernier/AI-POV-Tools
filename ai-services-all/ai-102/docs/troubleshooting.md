@@ -142,13 +142,13 @@ openssl s_client -connect 10.0.2.20:443 -showcerts </dev/null 2>/dev/null \
 
 Expected output:
 ```
-subject=O=Netskope POV, CN=dlp.aig.internal
-issuer=O=Netskope POV, CN=Netskope POV DLPoD CA
+subject=O=NetskopeLab, OU=Security, ..., CN=dlp.aig.internal
+issuer=C=US, ST=CA, L=SantaClara, O=NetskopeLab, OU=Security, CN=Netskope Lab Root CA, emailAddress=admin@lab.internal
 X509v3 Subject Alternative Name:
     DNS:dlp.aig.internal, IP Address:10.0.2.20
 ```
 
-If the issuer is not `Netskope POV DLPoD CA`, DLPoD is serving its built-in cert — the bootstrap dlpaas section was not applied.
+The issuer should be the lab root CA (`ca_new_subj`, or the subject of your existing CA certificate). If it is not, DLPoD is serving its built-in cert — the bootstrap dlpaas section was not applied.
 
 ### DLPoD not reachable from AIG
 

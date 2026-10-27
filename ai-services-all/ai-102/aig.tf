@@ -2,6 +2,16 @@
 # AI Gateway (AIG)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── AIG FQDN ──────────────────────────────────────────────────────────────────
+#
+# AWS-generated public DNS name of the AIG's Elastic IP
+# (ec2-<ip-with-dashes>.<region>.compute.amazonaws.com). This is the common name
+# (CN) of the AIG certificate.
+
+locals {
+  aig_fqdn = aws_eip.aig.public_dns
+}
+
 # ── Netskope: register appliance + generate enrollment token ──────────────────
 #
 # The appliance is registered with the AIG's Elastic IP before the EC2 instance
@@ -49,7 +59,7 @@ resource "aws_secretsmanager_secret_version" "aig_bootstrap" {
       host = "http://${var.guardrails_private_ip}:8080/invocations"
     }
     dlp = {
-      certificate = tls_self_signed_cert.dlpod_ca.cert_pem
+      certificate = data.local_file.ca_cert.content
       host        = "https://${var.dlpod_hostname}"
     }
   })

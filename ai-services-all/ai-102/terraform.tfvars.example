@@ -116,14 +116,15 @@ ca_new_addext = [
   "basicConstraints=critical,CA:TRUE",
   "keyUsage=critical,keyCertSign,cRLSign",
 ]
+ca_new_algorithm = "RSA" # only RSA is supported
+ca_new_rsa_bits  = 2048  # 2048, 3072 or 4096
 ca_new_days = 365
 
 # ── AIG - Cert ────────────────────────────────────────────────────────────────
 # Subject and key settings for the certificate whose CSR the AIG generates (to be
-# signed by the signing CA above). Optional fields may be omitted or set to null.
-
-# REQUIRED: Certificate CN (max 256 chars). Typically the DNS name clients use to reach the AIG.
-aig_cert_common_name = "ec2-203-0-113-10.compute-1.amazonaws.com"
+# signed by the signing CA above). The CN is not configurable: it is always the
+# AIG's AWS-generated public DNS name (output aig_fqdn). Optional fields may be
+# omitted or set to null.
 
 # OPTIONAL: Subject fields (O, OU, email, C, ST, L).
 aig_cert_organization      = "NetskopeLab" # max 256 chars
@@ -137,6 +138,30 @@ aig_cert_city              = "SantaClara" # max 256 chars
 aig_cert_key_algorithm = "ecdsa"
 aig_cert_key_size      = "2048" # RSA only: 2048, 3072 or 4096
 aig_cert_key_curve     = "P256" # ECDSA only: P256, P384 or P521
+
+# ── DLPoD - Cert ──────────────────────────────────────────────────────────────
+# Subject, key and validity of the DLPoD server certificate, signed by the signing
+# CA above and installed through the DLPoD bootstrap. The DNS SAN is always
+# dlpod_hostname and the IP SAN dlpod_private_ip. Optional fields may be omitted
+# or set to null.
+
+# OPTIONAL: Certificate CN (max 256 chars). Defaults to dlpod_hostname.
+# dlpod_cert_common_name = "dlp.aig.internal"
+
+# OPTIONAL: Subject fields (O, OU, C, ST, L).
+dlpod_cert_organization      = "NetskopeLab" # max 256 chars
+dlpod_cert_organization_unit = "Security"    # max 256 chars
+dlpod_cert_country           = "US"          # exactly 2 alphabetic characters
+dlpod_cert_state             = "CA"          # max 256 chars
+dlpod_cert_city              = "SantaClara"  # max 256 chars
+
+# Private key. Only RSA is supported; bits are 2048, 3072 or 4096.
+dlpod_cert_key_algorithm = "RSA"
+dlpod_cert_rsa_bits      = 2048
+
+# Certificate validity in hours (2160 = 90 days). Keep it shorter than the signing
+# CA's validity (ca_new_days) so the leaf does not outlive its CA.
+dlpod_cert_validity_period_hours = 2160
 
 # ── Bastion Host - EC2 ────────────────────────────────────────────────────────
 

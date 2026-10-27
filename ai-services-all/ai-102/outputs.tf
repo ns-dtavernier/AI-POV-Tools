@@ -20,6 +20,11 @@ output "aig_aws_eip_public_ip" {
   value       = aws_eip.aig.public_ip
 }
 
+output "aig_fqdn" {
+  description = "AWS-generated public DNS name of the AI Gateway's Elastic IP — the common name (CN) of the AIG certificate"
+  value       = local.aig_fqdn
+}
+
 output "bootstrap_secret_arn" {
   description = "ARN of the Secrets Manager bootstrap secret (enrollment token + AI Guardrails config)"
   value       = aws_secretsmanager_secret.aig_bootstrap.arn
