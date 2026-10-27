@@ -167,7 +167,7 @@ terraform apply
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `aws_object_prefix` | `"netskope"` | Prefix for all AWS resource names (Name tags and name attributes). 1–20 characters: lowercase letters, digits, hyphens. |
+| `aws_object_unique_prefix` | `"netskope"` | Unique prefix for the names of all AWS resources (Name tags and name attributes). Lowercase letters, digits and hyphens, 1-20 characters. |
 | `aws_region` | `"us-east-1"` | AWS region to deploy all resources |
 | `vpc_cidr` | `"10.0.0.0/16"` | CIDR for the new VPC |
 | `public_subnet_cidr` | `"10.0.1.0/24"` | Public subnet — hosts the AIG (EIP) and NAT Gateway |
@@ -179,7 +179,7 @@ terraform apply
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `aig_netskope_name` | `"aig-lab"` | AIG display name in Netskope tenant (1–15 characters) |
-| `secret_name` | `aig/<aws_object_prefix>/bootstrap` | Secrets Manager secret name. Must start with `aig/`. Set only to override the default. |
+| `secret_name` | `aig/<aws_object_unique_prefix>/bootstrap` | Secrets Manager secret name. Must start with `aig/`. Set only to override the default. |
 
 ### AIG — EC2
 

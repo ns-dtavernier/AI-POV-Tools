@@ -1,13 +1,13 @@
 # ── AWS ───────────────────────────────────────────────────────────────────────
 
-variable "aws_object_prefix" {
-  description = "Prefix for the names of all AWS resources (Name tags and name attributes). Lowercase letters, digits and hyphens, 1-20 characters."
+variable "aws_object_unique_prefix" {
+  description = "Unique prefix for the names of all AWS resources (Name tags and name attributes). Lowercase letters, digits and hyphens, 1-20 characters."
   type        = string
   default     = "netskope"
 
   validation {
-    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,19}$", var.aws_object_prefix))
-    error_message = "aws_object_prefix must be 1-20 characters: lowercase letters, digits and hyphens, starting with a letter or digit."
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{0,19}$", var.aws_object_unique_prefix))
+    error_message = "aws_object_unique_prefix must be 1-20 characters: lowercase letters, digits and hyphens, starting with a letter or digit."
   }
 }
 
@@ -140,7 +140,7 @@ variable "aig_netskope_name" {
 }
 
 variable "secret_name" {
-  description = "Secrets Manager secret name for the AIG bootstrap config (enrollment token + Guardrails host). Must start with \"aig/\". Defaults to aig/<aws_object_prefix>/bootstrap."
+  description = "Secrets Manager secret name for the AIG bootstrap config (enrollment token + Guardrails host). Must start with \"aig/\". Defaults to aig/<aws_object_unique_prefix>/bootstrap."
   type        = string
   default     = null
 

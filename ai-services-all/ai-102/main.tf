@@ -77,11 +77,11 @@ data "aws_ami" "ubuntu_22_04" {
 # ── Shared locals ─────────────────────────────────────────────────────────────
 
 locals {
-  aig_name        = "${var.aws_object_prefix}-aig"
-  guardrails_name = "${var.aws_object_prefix}-guardrails"
-  dlpod_name      = "${var.aws_object_prefix}-dlpod"
-  bastion_name    = "${var.aws_object_prefix}-bastion"
-  secret_name     = coalesce(var.secret_name, "aig/${var.aws_object_prefix}/bootstrap")
+  aig_name        = "${var.aws_object_unique_prefix}-aig"
+  guardrails_name = "${var.aws_object_unique_prefix}-guardrails"
+  dlpod_name      = "${var.aws_object_unique_prefix}-dlpod"
+  bastion_name    = "${var.aws_object_unique_prefix}-bastion"
+  secret_name     = coalesce(var.secret_name, "aig/${var.aws_object_unique_prefix}/bootstrap")
 
   # Extract the parent zone from dlpod_hostname (e.g. "dlp.aig.internal" → "aig.internal")
   dlpod_dns_zone = join(".", slice(split(".", var.dlpod_hostname), 1, length(split(".", var.dlpod_hostname))))

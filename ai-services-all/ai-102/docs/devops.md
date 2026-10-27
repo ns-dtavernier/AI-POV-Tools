@@ -43,7 +43,7 @@
 
 ### Secrets Manager
 
-The AIG bootstrap secret (`aig/<aws_object_prefix>/bootstrap` by default) stores:
+The AIG bootstrap secret (`aig/<aws_object_unique_prefix>/bootstrap` by default) stores:
 
 ```json
 {
@@ -127,7 +127,7 @@ The leaf cert and private key go only to DLPoD:
 
 #### AIG first boot
 
-10. **EC2 user-data** contains only: `{ "bootstrap_secret": "aig/<aws_object_prefix>/bootstrap" }`
+10. **EC2 user-data** contains only: `{ "bootstrap_secret": "aig/<aws_object_unique_prefix>/bootstrap" }`
 11. AIG calls `secretsmanager:GetSecretValue` using its IAM instance profile
 12. AIG uses `enrollment_token` to register with the Netskope tenant
 13. AIG configures Guardrails at `ai_guardrails.host`

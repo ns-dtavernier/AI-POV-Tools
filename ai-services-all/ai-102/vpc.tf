@@ -5,7 +5,7 @@ resource "aws_vpc" "this" {
   enable_dns_support   = true
   enable_dns_hostnames = true
 
-  tags = { Name = "${var.aws_object_prefix}-vpc" }
+  tags = { Name = "${var.aws_object_unique_prefix}-vpc" }
 }
 
 # ── Subnets ───────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ resource "aws_subnet" "public" {
   availability_zone       = var.availability_zone
   map_public_ip_on_launch = false
 
-  tags = { Name = "${var.aws_object_prefix}-public" }
+  tags = { Name = "${var.aws_object_unique_prefix}-public" }
 }
 
 resource "aws_subnet" "private" {
@@ -30,7 +30,7 @@ resource "aws_subnet" "private" {
   availability_zone       = var.availability_zone
   map_public_ip_on_launch = false
 
-  tags = { Name = "${var.aws_object_prefix}-private" }
+  tags = { Name = "${var.aws_object_unique_prefix}-private" }
 }
 
 # ── Internet Gateway ──────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ resource "aws_subnet" "private" {
 resource "aws_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
 
-  tags = { Name = "${var.aws_object_prefix}-igw" }
+  tags = { Name = "${var.aws_object_unique_prefix}-igw" }
 }
 
 # ── AIG Elastic IP ────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ resource "aws_internet_gateway" "this" {
 resource "aws_eip" "aig" {
   domain = "vpc"
 
-  tags = { Name = "${var.aws_object_prefix}-aig-eip" }
+  tags = { Name = "${var.aws_object_unique_prefix}-aig-eip" }
 }
 
 # ── NAT Gateway — outbound internet for the private subnet ────────────────────
@@ -62,14 +62,14 @@ resource "aws_eip" "nat" {
 
   depends_on = [aws_internet_gateway.this]
 
-  tags = { Name = "${var.aws_object_prefix}-nat-eip" }
+  tags = { Name = "${var.aws_object_unique_prefix}-nat-eip" }
 }
 
 resource "aws_nat_gateway" "this" {
   allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.public.id
 
-  tags = { Name = "${var.aws_object_prefix}-nat" }
+  tags = { Name = "${var.aws_object_unique_prefix}-nat" }
 
   depends_on = [aws_internet_gateway.this]
 }
@@ -84,7 +84,7 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.this.id
   }
 
-  tags = { Name = "${var.aws_object_prefix}-public-rt" }
+  tags = { Name = "${var.aws_object_unique_prefix}-public-rt" }
 }
 
 resource "aws_route_table_association" "public" {
@@ -100,7 +100,7 @@ resource "aws_route_table" "private" {
     nat_gateway_id = aws_nat_gateway.this.id
   }
 
-  tags = { Name = "${var.aws_object_prefix}-private-rt" }
+  tags = { Name = "${var.aws_object_unique_prefix}-private-rt" }
 }
 
 resource "aws_route_table_association" "private" {
@@ -116,7 +116,7 @@ resource "aws_route_table_association" "private" {
 # Manager without requiring internet access.
 
 resource "aws_security_group" "endpoints" {
-  name        = "${var.aws_object_prefix}-endpoints-sg"
+  name        = "${var.aws_object_unique_prefix}-endpoints-sg"
   description = "Allows HTTPS from within the VPC to interface VPC endpoints"
   vpc_id      = aws_vpc.this.id
 
@@ -128,7 +128,7 @@ resource "aws_security_group" "endpoints" {
     description = "HTTPS from VPC"
   }
 
-  tags = { Name = "${var.aws_object_prefix}-endpoints-sg" }
+  tags = { Name = "${var.aws_object_unique_prefix}-endpoints-sg" }
 }
 
 resource "aws_vpc_endpoint" "s3" {
@@ -137,7 +137,7 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.private.id]
 
-  tags = { Name = "${var.aws_object_prefix}-s3-endpoint" }
+  tags = { Name = "${var.aws_object_unique_prefix}-s3-endpoint" }
 }
 
 resource "aws_vpc_endpoint" "ssm" {
@@ -148,7 +148,7 @@ resource "aws_vpc_endpoint" "ssm" {
   security_group_ids  = [aws_security_group.endpoints.id]
   private_dns_enabled = true
 
-  tags = { Name = "${var.aws_object_prefix}-ssm-endpoint" }
+  tags = { Name = "${var.aws_object_unique_prefix}-ssm-endpoint" }
 }
 
 resource "aws_vpc_endpoint" "ssmmessages" {
@@ -159,7 +159,7 @@ resource "aws_vpc_endpoint" "ssmmessages" {
   security_group_ids  = [aws_security_group.endpoints.id]
   private_dns_enabled = true
 
-  tags = { Name = "${var.aws_object_prefix}-ssmmessages-endpoint" }
+  tags = { Name = "${var.aws_object_unique_prefix}-ssmmessages-endpoint" }
 }
 
 resource "aws_vpc_endpoint" "ec2messages" {
@@ -170,7 +170,7 @@ resource "aws_vpc_endpoint" "ec2messages" {
   security_group_ids  = [aws_security_group.endpoints.id]
   private_dns_enabled = true
 
-  tags = { Name = "${var.aws_object_prefix}-ec2messages-endpoint" }
+  tags = { Name = "${var.aws_object_unique_prefix}-ec2messages-endpoint" }
 }
 
 resource "aws_vpc_endpoint" "logs" {
@@ -181,7 +181,7 @@ resource "aws_vpc_endpoint" "logs" {
   security_group_ids  = [aws_security_group.endpoints.id]
   private_dns_enabled = true
 
-  tags = { Name = "${var.aws_object_prefix}-logs-endpoint" }
+  tags = { Name = "${var.aws_object_unique_prefix}-logs-endpoint" }
 }
 
 # ── Route 53 — private hosted zone for DLPoD hostname resolution ─────────────
@@ -200,7 +200,7 @@ resource "aws_route53_zone" "dlpod" {
     vpc_id = aws_vpc.this.id
   }
 
-  tags = { Name = "${var.aws_object_prefix}-${local.dlpod_dns_zone}" }
+  tags = { Name = "${var.aws_object_unique_prefix}-${local.dlpod_dns_zone}" }
 }
 
 resource "aws_route53_record" "dlpod" {

@@ -13,9 +13,9 @@
 #   export TF_VAR_netskope_onpremappliance_licensekey="XXXXXXXX-XXXXXXXX-XXXXXXXXX-XXXXXXX-XXXXXXXX-XXXXXX-XXXXXXXXXXXXXXXXXXXX-XXXXXXXX"
 
 # ── AWS ───────────────────────────────────────────────────────────────────────
-# Prefix for all AWS resource names (Name tags and name attributes): lowercase letters,
+# Unique prefix for the names of all AWS resources (Name tags and name attributes): lowercase letters,
 # digits and hyphens, 1-20 characters. Produces e.g. <prefix>-vpc, <prefix>-aig, <prefix>-guardrails.
-aws_object_prefix = "mylab"
+aws_object_unique_prefix = "mylab"
 
 # AWS region to deploy all resources
 aws_region = "us-east-1"
@@ -106,7 +106,7 @@ aig_key_name = "my-key-pair"
 
 # Secrets Manager secret that the AIG reads at first boot.
 # Must start with "aig/" to match the deployment IAM policy.
-# Defaults to "aig/<aws_object_prefix>/bootstrap"; set only to override.
+# Defaults to "aig/<aws_object_unique_prefix>/bootstrap"; set only to override.
 # secret_name = "aig/prod/bootstrap"
 
 # ── Guardrails — EC2 ──────────────────────────────────────────────────────────
