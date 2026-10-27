@@ -326,26 +326,26 @@ fi
 # Log the container ID for debugging
 echo "$(ts) Guardrails container ID: $${CONTAINER_ID}"
 
-# ---- Wait up to 10 minutes for the service to become healthy ----
-# wait_healthy <minutes>: polls every 20 seconds. Returns 0 as soon as /ping
+# ---- Wait up to 30 minutes for the service to become healthy ----
+# wait_healthy <minutes>: polls every 30 seconds. Returns 0 as soon as /ping
 # reports Healthy, 1 if the timeout expires.
 wait_healthy() {
-  local max_attempts=$(( $1 * 3 ))
+  local max_attempts=$(( $1 * 2 ))
   local attempts=0
   until curl -sf http://localhost:8080/ping | grep -q Healthy; do
-    aws_ssm_put_parameter_guardrails_ready "Guardrails waiting up to 10 minutes for container to be healthy: $(docker ps --format "{{.Status}}" --filter id=$CONTAINER_ID || echo "no container found")"
+    aws_ssm_put_parameter_guardrails_ready "Guardrails waiting for container: $(docker ps --format "{{.Status}}" --filter id=$CONTAINER_ID || echo "no container found")"
     attempts=$(( attempts + 1 ))
     [ "$attempts" -ge "$max_attempts" ] && return 1
-    sleep 20
+    sleep 30
   done
 }
 
-if ! wait_healthy 10; then
-  # Restart the container once and give it another 30 minutes.
-  echo "$(ts) WARNING: Guardrails not healthy after 10 minutes; restarting container $${CONTAINER_ID} once."
-  aws_ssm_put_parameter_guardrails_ready "WARNING: Guardrails container not healthy after 10 minutes; restarting and waiting up to 30 minutes"
+if ! wait_healthy 30; then
+  # Restart the container once and give it another 60 minutes.
+  echo "$(ts) WARNING: Guardrails container not healthy after 30 minutes; restarting container and waiting up to 60 minutes"
+  aws_ssm_put_parameter_guardrails_ready "WARNING: Guardrails container not healthy after 30 minutes; restarting and waiting up to 60 minutes"
   docker restart "$CONTAINER_ID" || echo "$(ts) WARNING: docker restart failed."
-  wait_healthy 30 || true
+  wait_healthy 60 || true
 fi
 
 # ---- Log final health status and signal readiness ----
@@ -354,8 +354,8 @@ if curl -sf http://localhost:8080/ping | grep -q Healthy; then
   aws_ssm_put_parameter_guardrails_ready "healthy"
 else
   echo "$(ts) ERROR: Guardrails service did not become healthy:" \
-    "not healthy after initial 10 minutes; restarted container; not healthy" \
-    "30 minutes after restart. Container may still be starting." \
+    "not healthy after initial 30 minutes; restarted container; still not" \
+    "healthy after 60 minutes after restart. Container may still be starting." \
     "Re-check with: curl http://localhost:8080/ping"
   aws_ssm_put_parameter_guardrails_ready "ERROR: Guardrails container did not become healthy within 40 minutes. Log into the instance to investigate."
 fi

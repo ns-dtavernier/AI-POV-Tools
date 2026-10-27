@@ -227,6 +227,13 @@ resource "null_resource" "guardrails_ready" {
       #    --name "/${local.guardrails_name}/guardrails-ready" \
       #    --region ${var.aws_region} 2>/dev/null || true
 
+      aws ssm put-parameter \
+        --name "/${guardrails_name}/guardrails-ready" \
+        --value "Guardrails booting" \
+        --type String \
+        --overwrite \
+        --region ${aws_region}
+
       echo "Waiting for Guardrails service to become healthy (up to 90 minutes)..."
       n=0
       while true; do
