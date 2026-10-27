@@ -237,13 +237,13 @@ resource "null_resource" "guardrails_ready" {
             --output text 2>/dev/null || true)
         [ "$STATUS" = "healthy" ] && break
         n=$((n + 1))
-        if [ $n -ge 90 ]; then
+        if [ $n -ge 540 ]; then
           echo "ERROR: Guardrails did not become healthy within 90 minutes."
           exit 1
         fi
         [ -n "$STATUS" ] || STATUS="(guardrails-ready parameter not set yet)"
         printf "%s %s\n" "$(date '+%H:%M:%S')" "$STATUS"
-        sleep 60
+        sleep 10
       done
       echo "Guardrails is healthy. Creating AIG instance."
     EOF

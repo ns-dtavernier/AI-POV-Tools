@@ -299,7 +299,7 @@ CONTAINER_ID=$(docker ps -aq --filter "ancestor=$${LOCAL_IMAGE}" | head -1)
 if [ -z "$CONTAINER_ID" ]; then
   echo "$(ts) No Guardrails container exists; creating one."
   aws_ssm_put_parameter_guardrails_ready "Guardrails creating LLM container"
-  docker run -d \
+  CONTAINER_ID=$(docker run -d \
     --name guardrails \
     --gpus all \
     --shm-size=1g \
@@ -309,7 +309,7 @@ if [ -z "$CONTAINER_ID" ]; then
     -e TOKENIZERS_PARALLELISM=false \
     --restart=unless-stopped \
     -p 8080:8080 \
-    "$${LOCAL_IMAGE}"
+    "$${LOCAL_IMAGE}")
 else
   docker update --restart=unless-stopped "$CONTAINER_ID"
   if [ -n "$CHANGED" ]; then
@@ -323,26 +323,29 @@ else
   fi
 fi
 
+# Log the container ID for debugging
+echo "$(ts) Guardrails container ID: $${CONTAINER_ID}"
+
 # ---- Wait up to 10 minutes for the service to become healthy ----
-# Returns 0 as soon as /ping reports Healthy, 1 if the timeout expires.
-aws_ssm_put_parameter_guardrails_ready "Guardrails waiting for container to be healthy (up to 10 minutes)"
+# wait_healthy <minutes>: polls every 20 seconds. Returns 0 as soon as /ping
+# reports Healthy, 1 if the timeout expires.
 wait_healthy() {
+  local max_attempts=$(( $1 * 3 ))
   local attempts=0
   until curl -sf http://localhost:8080/ping | grep -q Healthy; do
+    aws_ssm_put_parameter_guardrails_ready "Guardrails waiting up to 10 minutes for container to be healthy: $(docker ps --format "{{.Status}}" --filter id=$CONTAINER_ID || echo "no container found")"
     attempts=$(( attempts + 1 ))
-    [ "$attempts" -ge 60 ] && return 1
-    sleep 10
+    [ "$attempts" -ge "$max_attempts" ] && return 1
+    sleep 20
   done
 }
 
-if ! wait_healthy; then
-  # Restart the container once and give it another 10 minutes. The container
-  # is looked up again because the create branch above does not set CONTAINER_ID.
-  CONTAINER_ID=$(docker ps -aq --filter "ancestor=$${LOCAL_IMAGE}" | head -1)
+if ! wait_healthy 10; then
+  # Restart the container once and give it another 30 minutes.
   echo "$(ts) WARNING: Guardrails not healthy after 10 minutes; restarting container $${CONTAINER_ID} once."
-  aws_ssm_put_parameter_guardrails_ready "WARNING: Guardrails container not healthy after 10 minutes; restarting"
+  aws_ssm_put_parameter_guardrails_ready "WARNING: Guardrails container not healthy after 10 minutes; restarting and waiting up to 30 minutes"
   docker restart "$CONTAINER_ID" || echo "$(ts) WARNING: docker restart failed."
-  wait_healthy || true
+  wait_healthy 30 || true
 fi
 
 # ---- Log final health status and signal readiness ----
@@ -350,11 +353,11 @@ if curl -sf http://localhost:8080/ping | grep -q Healthy; then
   echo "$(ts) SUCCESS: Guardrails service is healthy and ready on port 8080."
   aws_ssm_put_parameter_guardrails_ready "healthy"
 else
-  echo "$(ts) WARNING: Guardrails service did not become healthy within 10 minutes:" \
-    "not healthy after initial 5 minutes; restarted container; not healthy 5" \
-    "minutes after restart. Container may still be starting." \
+  echo "$(ts) ERROR: Guardrails service did not become healthy:" \
+    "not healthy after initial 10 minutes; restarted container; not healthy" \
+    "30 minutes after restart. Container may still be starting." \
     "Re-check with: curl http://localhost:8080/ping"
-  aws_ssm_put_parameter_guardrails_ready "ERROR: Guardrail container did not become healthy within 20 minutes"
+  aws_ssm_put_parameter_guardrails_ready "ERROR: Guardrails container did not become healthy within 40 minutes. Log into the instance to investigate."
 fi
 PHASE2MARKER
 
