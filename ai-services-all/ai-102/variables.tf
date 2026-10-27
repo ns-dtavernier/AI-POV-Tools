@@ -243,6 +243,119 @@ variable "ca_new_days" {
   }
 }
 
+# ── AIG - Cert ────────────────────────────────────────────────────────────────
+# Subject and key settings for the certificate whose CSR the AIG generates (to be
+# signed by the signing CA above). Optional fields left null are omitted.
+
+variable "aig_cert_common_name" {
+  description = "Certificate common name (CN), 1-256 characters. Required. For the AIG this is typically the DNS name clients use to reach it, e.g. the Elastic IP's ec2-<ip-with-dashes>.<region>.compute.amazonaws.com name."
+  type        = string
+
+  validation {
+    condition     = length(var.aig_cert_common_name) >= 1 && length(var.aig_cert_common_name) <= 256
+    error_message = "aig_cert_common_name is required and must be 1-256 characters."
+  }
+}
+
+variable "aig_cert_organization" {
+  description = "Optional. Organization name (O), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_organization == null ? true : length(var.aig_cert_organization) <= 256
+    error_message = "aig_cert_organization must be at most 256 characters."
+  }
+}
+
+variable "aig_cert_organization_unit" {
+  description = "Optional. Organizational unit (OU), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_organization_unit == null ? true : length(var.aig_cert_organization_unit) <= 256
+    error_message = "aig_cert_organization_unit must be at most 256 characters."
+  }
+}
+
+variable "aig_cert_email" {
+  description = "Optional. Email address for the certificate subject (valid email format)."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_email == null || can(regex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$", var.aig_cert_email))
+    error_message = "aig_cert_email must be a valid email address (e.g. admin@lab.internal)."
+  }
+}
+
+variable "aig_cert_country" {
+  description = "Optional. Two-letter country code (C), exactly 2 alphabetic characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_country == null || can(regex("^[A-Za-z]{2}$", var.aig_cert_country))
+    error_message = "aig_cert_country must be exactly 2 alphabetic characters (e.g. US)."
+  }
+}
+
+variable "aig_cert_state" {
+  description = "Optional. State or province (ST), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_state == null ? true : length(var.aig_cert_state) <= 256
+    error_message = "aig_cert_state must be at most 256 characters."
+  }
+}
+
+variable "aig_cert_city" {
+  description = "Optional. City or locality (L), up to 256 characters."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_city == null ? true : length(var.aig_cert_city) <= 256
+    error_message = "aig_cert_city must be at most 256 characters."
+  }
+}
+
+variable "aig_cert_key_algorithm" {
+  description = "Optional. Private key algorithm: ecdsa, rsa or ed25519. When null the AIG defaults to ecdsa (P-256)."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_key_algorithm == null ? true : contains(["ecdsa", "rsa", "ed25519"], var.aig_cert_key_algorithm)
+    error_message = "aig_cert_key_algorithm must be one of: ecdsa, rsa, ed25519."
+  }
+}
+
+variable "aig_cert_key_size" {
+  description = "Optional. RSA key size in bits: 2048, 3072 or 4096. Applies when aig_cert_key_algorithm is rsa."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_key_size == null ? true : contains(["2048", "3072", "4096"], var.aig_cert_key_size)
+    error_message = "aig_cert_key_size must be one of: 2048, 3072, 4096."
+  }
+}
+
+variable "aig_cert_key_curve" {
+  description = "Optional. ECDSA curve: P256, P384 or P521. Applies when aig_cert_key_algorithm is ecdsa."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aig_cert_key_curve == null ? true : contains(["P256", "P384", "P521"], var.aig_cert_key_curve)
+    error_message = "aig_cert_key_curve must be one of: P256, P384, P521."
+  }
+}
+
 # ── Bastion Host - EC2 ────────────────────────────────────────────────────────
 
 variable "bastion_private_ip" {

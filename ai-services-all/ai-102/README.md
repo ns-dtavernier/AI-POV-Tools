@@ -184,6 +184,23 @@ A new root CA is generated with `openssl` (which must be on the `PATH` of the ma
 | `ca_new_addext` | `["basicConstraints=critical,CA:TRUE", "keyUsage=critical,keyCertSign,cRLSign"]` | Extensions of the new CA certificate, one `-addext` value per entry |
 | `ca_new_days` | `365` | Validity of the new CA certificate in days |
 
+### AIG — Cert
+
+Subject and key settings for the certificate whose CSR the AIG generates (signed by the signing CA above). Not yet consumed by any resource.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `aig_cert_common_name` | — (required) | Certificate CN, 1–256 characters |
+| `aig_cert_organization` | `null` | Organization (O), up to 256 characters |
+| `aig_cert_organization_unit` | `null` | Organizational unit (OU), up to 256 characters |
+| `aig_cert_email` | `null` | Subject email address |
+| `aig_cert_country` | `null` | Two-letter country code (C) |
+| `aig_cert_state` | `null` | State or province (ST), up to 256 characters |
+| `aig_cert_city` | `null` | City or locality (L), up to 256 characters |
+| `aig_cert_key_algorithm` | `null` | `ecdsa`, `rsa` or `ed25519`; the AIG defaults to ecdsa (P-256) when unset |
+| `aig_cert_key_size` | `null` | RSA key size: `2048`, `3072` or `4096` |
+| `aig_cert_key_curve` | `null` | ECDSA curve: `P256`, `P384` or `P521` |
+
 ### AWS and networking
 
 | Variable | Default | Description |

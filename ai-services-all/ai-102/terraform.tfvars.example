@@ -118,6 +118,26 @@ ca_new_addext = [
 ]
 ca_new_days = 365
 
+# ── AIG - Cert ────────────────────────────────────────────────────────────────
+# Subject and key settings for the certificate whose CSR the AIG generates (to be
+# signed by the signing CA above). Optional fields may be omitted or set to null.
+
+# REQUIRED: Certificate CN (max 256 chars). Typically the DNS name clients use to reach the AIG.
+aig_cert_common_name = "ec2-203-0-113-10.compute-1.amazonaws.com"
+
+# OPTIONAL: Subject fields (O, OU, email, C, ST, L).
+aig_cert_organization      = "NetskopeLab" # max 256 chars
+aig_cert_organization_unit = "Security"    # max 256 chars
+aig_cert_email             = "admin@lab.internal"
+aig_cert_country           = "US" # exactly 2 alphabetic characters
+aig_cert_state             = "CA" # max 256 chars
+aig_cert_city              = "SantaClara" # max 256 chars
+
+# OPTIONAL: Private key. Algorithm is ecdsa, rsa or ed25519 (ecdsa P-256 when unset).
+aig_cert_key_algorithm = "ecdsa"
+aig_cert_key_size      = "2048" # RSA only: 2048, 3072 or 4096
+aig_cert_key_curve     = "P256" # ECDSA only: P256, P384 or P521
+
 # ── Bastion Host - EC2 ────────────────────────────────────────────────────────
 
 # Fixed private IP for the bastion. Must be within public_subnet_cidr.
