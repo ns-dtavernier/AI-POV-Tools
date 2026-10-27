@@ -201,7 +201,7 @@ Subject and key settings for the certificate whose CSR the AIG generates (signed
 | `aig_cert_key_algorithm` | `null` | `ecdsa`, `rsa` or `ed25519`; the AIG defaults to ecdsa (P-256) when unset |
 | `aig_cert_key_size` | `null` | RSA key size: `2048`, `3072` or `4096` |
 | `aig_cert_key_curve` | `null` | ECDSA curve: `P256`, `P384` or `P521` |
-| `aig_cert_validity_period_hours` | `2160` | Validity of the signed AIG certificate in hours (90 days), rounded up to whole days. Keep it shorter than the CA's validity. |
+| `aig_cert_validity_period_days` | `90` | Validity of the signed AIG certificate in days. Keep it shorter than the CA's validity. |
 
 ### DLPoD — Cert
 
@@ -217,7 +217,7 @@ Subject, key and validity of the DLPoD server certificate, signed by the signing
 | `dlpod_cert_city` | `null` | City or locality (L), up to 256 characters |
 | `dlpod_cert_key_algorithm` | `"RSA"` | Private key algorithm. Only RSA is supported. |
 | `dlpod_cert_rsa_bits` | `2048` | RSA key size: `2048`, `3072` or `4096` |
-| `dlpod_cert_validity_period_hours` | `2160` | Certificate validity in hours (90 days). Keep it shorter than the CA's validity. |
+| `dlpod_cert_validity_period_days` | `90` | Certificate validity in days. Keep it shorter than the CA's validity. |
 
 ### AWS and networking
 

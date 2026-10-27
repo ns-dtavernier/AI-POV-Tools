@@ -50,7 +50,7 @@ resource "tls_locally_signed_cert" "dlpod" {
   ca_private_key_pem = data.local_sensitive_file.ca_key.content
   ca_cert_pem        = data.local_file.ca_cert.content
 
-  validity_period_hours = var.dlpod_cert_validity_period_hours
+  validity_period_hours = var.dlpod_cert_validity_period_days * 24
   is_ca_certificate     = false
 
   allowed_uses = [

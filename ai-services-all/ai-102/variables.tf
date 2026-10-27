@@ -359,14 +359,14 @@ variable "aig_cert_key_curve" {
   }
 }
 
-variable "aig_cert_validity_period_hours" {
-  description = "Validity of the AIG certificate signed by the bastion, in hours (2160 = 90 days). Rounded up to whole days. Keep it shorter than the signing CA's validity (ca_new_days), or the leaf outlives its CA."
+variable "aig_cert_validity_period_days" {
+  description = "Validity of the AIG certificate signed by the bastion, in days. Keep it shorter than the signing CA's validity (ca_new_days), or the leaf outlives its CA."
   type        = number
-  default     = 2160
+  default     = 90
 
   validation {
-    condition     = var.aig_cert_validity_period_hours >= 1 && var.aig_cert_validity_period_hours == floor(var.aig_cert_validity_period_hours)
-    error_message = "aig_cert_validity_period_hours must be a positive whole number."
+    condition     = var.aig_cert_validity_period_days >= 1 && var.aig_cert_validity_period_days == floor(var.aig_cert_validity_period_days)
+    error_message = "aig_cert_validity_period_days must be a positive whole number."
   }
 }
 
@@ -464,14 +464,14 @@ variable "dlpod_cert_rsa_bits" {
   }
 }
 
-variable "dlpod_cert_validity_period_hours" {
-  description = "Validity of the DLPoD server certificate in hours (2160 = 90 days). Keep it shorter than the signing CA's validity (ca_new_days), or the leaf outlives its CA."
+variable "dlpod_cert_validity_period_days" {
+  description = "Validity of the DLPoD server certificate in days. Keep it shorter than the signing CA's validity (ca_new_days), or the leaf outlives its CA."
   type        = number
-  default     = 2160
+  default     = 90
 
   validation {
-    condition     = var.dlpod_cert_validity_period_hours >= 1 && var.dlpod_cert_validity_period_hours == floor(var.dlpod_cert_validity_period_hours)
-    error_message = "dlpod_cert_validity_period_hours must be a positive whole number."
+    condition     = var.dlpod_cert_validity_period_days >= 1 && var.dlpod_cert_validity_period_days == floor(var.dlpod_cert_validity_period_days)
+    error_message = "dlpod_cert_validity_period_days must be a positive whole number."
   }
 }
 

@@ -207,7 +207,6 @@ locals {
   # Single-quote-safe for embedding in the shell config file
   aig_csr_fields_shell = replace(jsonencode(local.aig_csr_fields), "'", "'\\''")
 
-  aig_cert_validity_days = ceil(var.aig_cert_validity_period_hours / 24)
 }
 
 # ── EC2 Instance ──────────────────────────────────────────────────────────────
@@ -292,7 +291,7 @@ resource "aws_instance" "bastion" {
     CA_KEY=/home/ssm-user/${local.ca_file_stem}-key.pem
     CA_CERT=/home/ssm-user/${local.ca_file_stem}-cert.pem
     CA_SERIAL=/home/ssm-user/${local.ca_file_stem}-cert.srl
-    CERT_DAYS=${local.aig_cert_validity_days}
+    CERT_DAYS=${var.aig_cert_validity_period_days}
     CSR_FIELDS='${local.aig_csr_fields_shell}'
     CONF
 

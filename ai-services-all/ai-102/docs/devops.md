@@ -95,7 +95,7 @@ The DLPoD server certificate is signed within Terraform by the lab root CA from 
    - optional O, OU, C, ST, L from the `dlpod_cert_*` variables
    - `DNS SAN = dlp.aig.internal` (var.dlpod_hostname)
    - `IP SAN = 10.0.2.20` (var.dlpod_private_ip)
-3. **`tls_locally_signed_cert.dlpod`** — the lab root CA signs the CSR to produce the leaf server cert (`CA:FALSE`, `server_auth`) valid for `dlpod_cert_validity_period_hours` (default 2160, 90 days)
+3. **`tls_locally_signed_cert.dlpod`** — the lab root CA signs the CSR to produce the leaf server cert (`CA:FALSE`, `server_auth`) valid for `dlpod_cert_validity_period_days` (default 90)
 
 The CA cert PEM is then split across two consumers:
 - → `aws_secretsmanager_secret_version.aig_bootstrap` as `dlp.certificate` (AIG uses this to verify DLPoD's TLS)
