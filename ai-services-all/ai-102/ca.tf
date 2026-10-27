@@ -1,0 +1,129 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# AIG signing CA
+#
+# The bastion will request a CSR from the AIG, sign it with this CA and post the
+# signed certificate back to the AIG. This file provides the CA key and
+# certificate; the CSR request, signing and post are not implemented yet.
+#
+#   - ca_existing_signing_key_local_path = ""  → a new root CA is generated
+#     locally with openssl (RSA 4096 key + self-signed certificate built from
+#     ca_new_subj, ca_new_addext and ca_new_days), written to
+#     lab-root-ca-key.pem and lab-root-ca-cert.pem in the project root directory.
+#   - ca_existing_signing_key_local_path = "<path>" → no key is created. That key
+#     and the certificate at ca_existing_signing_cert_local_path are used.
+#
+# Both are stored in Secrets Manager and downloaded by the bastion to
+# /home/ssm-user/ (see bastion.tf).
+#
+# Private key material lives in Terraform state — use S3 remote state with
+# SSE-KMS encryption to protect it at rest.
+# ══════════════════════════════════════════════════════════════════════════════
+
+locals {
+  use_existing_ca = var.ca_existing_signing_key_local_path != ""
+
+  ca_new_key_path  = "${path.module}/lab-root-ca-key.pem"
+  ca_new_cert_path = "${path.module}/lab-root-ca-cert.pem"
+
+  ca_key_path  = local.use_existing_ca ? pathexpand(var.ca_existing_signing_key_local_path) : local.ca_new_key_path
+  ca_cert_path = local.use_existing_ca ? pathexpand(var.ca_existing_signing_cert_local_path) : local.ca_new_cert_path
+
+  ca_key_secret_name  = "aig/${var.aws_object_unique_prefix}/ca-key"
+  ca_cert_secret_name = "aig/${var.aws_object_unique_prefix}/ca-cert"
+}
+
+# ── New root CA (only when no existing signing key is provided) ───────────────
+# Equivalent to:
+#   openssl genrsa -out lab-root-ca-key.pem 4096
+#   openssl req -x509 -new -nodes -key lab-root-ca-key.pem -sha256 -days <days> \
+#     -out lab-root-ca-cert.pem -subj "<subj>" -addext "<addext>" ...
+# Requires openssl 1.1.1+ (or LibreSSL 3.1+) on the machine running Terraform.
+# To regenerate: terraform apply -replace='null_resource.ca_new[0]'
+
+resource "null_resource" "ca_new" {
+  count = local.use_existing_ca ? 0 : 1
+
+  # Destroy provisioners can only read self, so the file paths live in triggers.
+  triggers = {
+    subj      = var.ca_new_subj
+    addext    = join("\n", var.ca_new_addext)
+    days      = var.ca_new_days
+    key_path  = local.ca_new_key_path
+    cert_path = local.ca_new_cert_path
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    environment = {
+      CA_KEY    = self.triggers.key_path
+      CA_CERT   = self.triggers.cert_path
+      CA_SUBJ   = self.triggers.subj
+      CA_ADDEXT = self.triggers.addext
+      CA_DAYS   = self.triggers.days
+    }
+    command = <<-EOF
+      set -e
+      command -v openssl >/dev/null || { echo "ERROR: openssl is required to generate the lab root CA"; exit 1; }
+      umask 077
+      args=()
+      while IFS= read -r ext; do
+        [ -n "$ext" ] && args+=(-addext "$ext")
+      done <<< "$CA_ADDEXT"
+      openssl genrsa -out "$CA_KEY" 4096
+      openssl req -x509 -new -nodes \
+        -key "$CA_KEY" -sha256 -days "$CA_DAYS" \
+        -out "$CA_CERT" \
+        -subj "$CA_SUBJ" \
+        "$${args[@]}"
+      chmod 644 "$CA_CERT"
+    EOF
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    environment = {
+      CA_KEY  = self.triggers.key_path
+      CA_CERT = self.triggers.cert_path
+    }
+    command = "rm -f \"$CA_KEY\" \"$CA_CERT\""
+  }
+}
+
+# ── CA key and certificate: provided or newly generated ───────────────────────
+# depends_on defers the read until the files have been generated.
+
+data "local_sensitive_file" "ca_key" {
+  filename   = local.ca_key_path
+  depends_on = [null_resource.ca_new]
+}
+
+data "local_file" "ca_cert" {
+  filename   = local.ca_cert_path
+  depends_on = [null_resource.ca_new]
+}
+
+# ── Secrets Manager: CA key and certificate for the bastion ───────────────────
+# The names start with "aig/" to match the deployment IAM policy.
+
+resource "aws_secretsmanager_secret" "ca_key" {
+  name                    = local.ca_key_secret_name
+  description             = "Lab root CA signing key - downloaded by the bastion to sign the AIG CSR"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "ca_key" {
+  secret_id     = aws_secretsmanager_secret.ca_key.id
+  secret_string = data.local_sensitive_file.ca_key.content
+}
+
+resource "aws_secretsmanager_secret" "ca_cert" {
+  name                    = local.ca_cert_secret_name
+  description             = "Lab root CA certificate - downloaded by the bastion to sign the AIG CSR"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "ca_cert" {
+  secret_id     = aws_secretsmanager_secret.ca_cert.id
+  secret_string = data.local_file.ca_cert.content
+}

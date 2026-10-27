@@ -42,6 +42,25 @@ resource "aws_iam_role_policy" "bastion_read_ssh_key" {
   })
 }
 
+# Read the lab root CA key and certificate (for signing the AIG CSR) from Secrets Manager
+resource "aws_iam_role_policy" "bastion_read_ca" {
+  name = "${local.bastion_name}-read-ca"
+  role = aws_iam_role.bastion.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "ReadCASecrets"
+      Effect = "Allow"
+      Action = "secretsmanager:GetSecretValue"
+      Resource = [
+        aws_secretsmanager_secret.ca_key.arn,
+        aws_secretsmanager_secret.ca_cert.arn,
+      ]
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "bastion" {
   name = "${local.bastion_name}-instance-profile"
   role = aws_iam_role.bastion.name
@@ -156,9 +175,16 @@ resource "aws_instance" "bastion" {
   associate_public_ip_address = true
 
   # Install and start the SSM agent — required for Session Manager on Ubuntu.
-  # Then download the SSH private key from Secrets Manager into the ubuntu
-  # user's ~/.ssh so the bastion can SSH to the AIG. The IAM role policy can
-  # take a few seconds to propagate, so the download is retried.
+  # Then download from Secrets Manager:
+  #   - the SSH private key into ~/.ssh of both the ubuntu user (SSH logins) and
+  #     ssm-user (Session Manager's default OS user), so the bastion can SSH to
+  #     the AIG from either;
+  #   - the lab root CA key and certificate into /home/ssm-user/, for signing
+  #     the AIG CSR.
+  # ssm-user is normally created by the SSM agent at the first session; it is
+  # created here instead so its home exists, with the same passwordless sudo the
+  # agent grants. The IAM role policies can take a few seconds to propagate, so
+  # each download is retried.
   user_data = <<-EOF
     #!/bin/bash
     snap install amazon-ssm-agent --classic
@@ -167,25 +193,38 @@ resource "aws_instance" "bastion" {
 
     snap install aws-cli --classic
 
-    KEY=/home/ubuntu/.ssh/${local.keypair_name}.pem
-    install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
+    id ssm-user >/dev/null 2>&1 || useradd -m -s /bin/bash ssm-user
+    echo "ssm-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ssm-agent-users
+    chmod 440 /etc/sudoers.d/ssm-agent-users
+
     umask 077
-    for i in $(seq 1 30); do
-      if /snap/bin/aws secretsmanager get-secret-value \
-          --region ${var.aws_region} \
-          --secret-id ${aws_secretsmanager_secret.ssh_private_key.name} \
-          --query SecretString --output text > "$KEY.tmp"; then
-        mv "$KEY.tmp" "$KEY"
-        chown ubuntu:ubuntu "$KEY"
-        chmod 600 "$KEY"
-        printf 'Host *\n  IdentityFile %s\n' "$KEY" > /home/ubuntu/.ssh/config
-        chown ubuntu:ubuntu /home/ubuntu/.ssh/config
-        chmod 600 /home/ubuntu/.ssh/config
-        break
-      fi
-      rm -f "$KEY.tmp"
-      sleep 10
+    TMPFILE=$(mktemp)
+
+    # fetch_secret <secret-id> <destination> <mode> <owner>
+    fetch_secret() {
+      for i in $(seq 1 30); do
+        if /snap/bin/aws secretsmanager get-secret-value             --region ${var.aws_region}             --secret-id "$1"             --query SecretString --output text > "$TMPFILE"; then
+          install -m "$3" -o "$4" -g "$4" "$TMPFILE" "$2"
+          return 0
+        fi
+        sleep 10
+      done
+      return 1
+    }
+
+    for U in ubuntu ssm-user; do
+      D=/home/$U/.ssh
+      install -d -m 700 -o $U -g $U $D
+      fetch_secret ${aws_secretsmanager_secret.ssh_private_key.name} "$D/${local.keypair_name}.pem" 600 $U
+      printf 'Host *\n  IdentityFile %s\n' "$D/${local.keypair_name}.pem" > $D/config
+      chown $U:$U $D/config
+      chmod 600 $D/config
     done
+
+    fetch_secret ${aws_secretsmanager_secret.ca_key.name} /home/ssm-user/lab-root-ca-key.pem 600 ssm-user
+    fetch_secret ${aws_secretsmanager_secret.ca_cert.name} /home/ssm-user/lab-root-ca-cert.pem 644 ssm-user
+
+    rm -f "$TMPFILE"
   EOF
 
   user_data_replace_on_change = true
@@ -193,6 +232,9 @@ resource "aws_instance" "bastion" {
   depends_on = [
     aws_iam_role_policy.bastion_read_ssh_key,
     aws_secretsmanager_secret_version.ssh_private_key,
+    aws_iam_role_policy.bastion_read_ca,
+    aws_secretsmanager_secret_version.ca_key,
+    aws_secretsmanager_secret_version.ca_cert,
   ]
 
   metadata_options {
