@@ -248,7 +248,7 @@ The readiness gates (`null_resource.guardrails_ready`, `null_resource.dlpod_read
 ### Sensitive Values in State
 
 The Terraform state file contains:
-- DLPoD TLS private key (`tls_private_key.dlpod`) and the lab root CA private key (read from `lab-root-ca-key.pem` or `ca_existing_signing_key_local_path`)
+- DLPoD TLS private key (`tls_private_key.dlpod`) and the lab root CA private key (read from `<aws_object_unique_prefix>-root-ca-key.pem` or `ca_existing_signing_key_local_path`)
 - The AIG enrollment token
 - The DLPoD license key
 

@@ -1,14 +1,14 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # AIG signing CA
 #
-# The bastion will request a CSR from the AIG, sign it with this CA and post the
-# signed certificate back to the AIG. This file provides the CA key and
-# certificate; the CSR request, signing and post are not implemented yet.
+# The bastion requests a CSR from the AIG, signs it with this CA and posts the
+# signed certificate back to the AIG (templates/aig-cert-setup.sh, installed by
+# bastion.tf). This file provides the CA key and certificate.
 #
 #   - ca_existing_signing_key_local_path = ""  → a new root CA is generated
 #     locally with openssl (key from ca_new_algorithm / ca_new_rsa_bits and a
 #     self-signed certificate built from ca_new_subj, ca_new_addext and
-#     ca_new_days), written to lab-root-ca-key.pem and lab-root-ca-cert.pem in
+#     ca_new_days), written to <prefix>-root-ca-key.pem and <prefix>-root-ca-cert.pem in
 #     the project root directory.
 #   - ca_existing_signing_key_local_path = "<path>" → no key is created. That key
 #     and the certificate at ca_existing_signing_cert_local_path are used.
@@ -28,8 +28,11 @@
 locals {
   use_existing_ca = var.ca_existing_signing_key_local_path != ""
 
-  ca_new_key_path  = "${path.module}/lab-root-ca-key.pem"
-  ca_new_cert_path = "${path.module}/lab-root-ca-cert.pem"
+  # File name stem for the CA, locally and on the bastion: <prefix>-root-ca-key.pem etc.
+  ca_file_stem = "${var.aws_object_unique_prefix}-root-ca"
+
+  ca_new_key_path  = "${path.module}/${local.ca_file_stem}-key.pem"
+  ca_new_cert_path = "${path.module}/${local.ca_file_stem}-cert.pem"
 
   ca_key_path  = local.use_existing_ca ? pathexpand(var.ca_existing_signing_key_local_path) : local.ca_new_key_path
   ca_cert_path = local.use_existing_ca ? pathexpand(var.ca_existing_signing_cert_local_path) : local.ca_new_cert_path
@@ -40,9 +43,9 @@ locals {
 
 # ── New root CA (only when no existing signing key is provided) ───────────────
 # Equivalent to:
-#   openssl genrsa -out lab-root-ca-key.pem <rsa_bits>
-#   openssl req -x509 -new -nodes -key lab-root-ca-key.pem -sha256 -days <days> \
-#     -out lab-root-ca-cert.pem -subj "<subj>" -addext "<addext>" ...
+#   openssl genrsa -out <prefix>-root-ca-key.pem <rsa_bits>
+#   openssl req -x509 -new -nodes -key <prefix>-root-ca-key.pem -sha256 -days <days> \
+#     -out <prefix>-root-ca-cert.pem -subj "<subj>" -addext "<addext>" ...
 # Requires openssl 1.1.1+ (or LibreSSL 3.1+) on the machine running Terraform.
 # To regenerate: terraform apply -replace='null_resource.ca_new[0]'
 

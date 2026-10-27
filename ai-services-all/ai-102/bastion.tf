@@ -61,6 +61,23 @@ resource "aws_iam_role_policy" "bastion_read_ca" {
   })
 }
 
+# Let the AIG certificate setup script check that the AIG instance is running.
+# ec2:DescribeInstances does not support resource-level permissions.
+resource "aws_iam_role_policy" "bastion_describe_aig" {
+  name = "${local.bastion_name}-describe-instances"
+  role = aws_iam_role.bastion.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "DescribeInstances"
+      Effect   = "Allow"
+      Action   = "ec2:DescribeInstances"
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "bastion" {
   name = "${local.bastion_name}-instance-profile"
   role = aws_iam_role.bastion.name
@@ -161,6 +178,38 @@ resource "aws_security_group_rule" "aig_config_api_from_bastion" {
   description              = "AIG configuration API from bastion (certificate setup)"
 }
 
+# ── AIG certificate setup (runs on the bastion at every boot) ─────────────────
+#
+# templates/aig-cert-setup.sh is installed as aig-cert-setup.service. It reads
+# its settings from /etc/aig-cert-setup.conf, written from the values below.
+# The AIG is found at runtime by its Name tag, so the bastion does not depend on
+# (or wait for) the AIG instance — only on its Elastic IP.
+
+locals {
+  aig_cert_key_algorithm_effective = coalesce(var.aig_cert_key_algorithm, "ecdsa")
+
+  # CSR request fields other than common_name (always aig_fqdn). Unset values are
+  # omitted; key size applies only to rsa and key curve only to ecdsa.
+  aig_csr_fields = {
+    for k, v in {
+      organization      = var.aig_cert_organization
+      organization_unit = var.aig_cert_organization_unit
+      email             = var.aig_cert_email
+      country           = var.aig_cert_country
+      state             = var.aig_cert_state
+      city              = var.aig_cert_city
+      key_algorithm     = var.aig_cert_key_algorithm
+      key_size          = local.aig_cert_key_algorithm_effective == "rsa" ? var.aig_cert_key_size : null
+      key_curve         = local.aig_cert_key_algorithm_effective == "ecdsa" ? var.aig_cert_key_curve : null
+    } : k => v if v != null
+  }
+
+  # Single-quote-safe for embedding in the shell config file
+  aig_csr_fields_shell = replace(jsonencode(local.aig_csr_fields), "'", "'\\''")
+
+  aig_cert_validity_days = ceil(var.aig_cert_validity_period_hours / 24)
+}
+
 # ── EC2 Instance ──────────────────────────────────────────────────────────────
 
 resource "aws_instance" "bastion" {
@@ -185,6 +234,7 @@ resource "aws_instance" "bastion" {
   # created here instead so its home exists, with the same passwordless sudo the
   # agent grants. The IAM role policies can take a few seconds to propagate, so
   # each download is retried.
+  # Finally installs jq and the aig-cert-setup service (see the locals above).
   user_data = <<-EOF
     #!/bin/bash
     snap install amazon-ssm-agent --classic
@@ -203,7 +253,10 @@ resource "aws_instance" "bastion" {
     # fetch_secret <secret-id> <destination> <mode> <owner>
     fetch_secret() {
       for i in $(seq 1 30); do
-        if /snap/bin/aws secretsmanager get-secret-value             --region ${var.aws_region}             --secret-id "$1"             --query SecretString --output text > "$TMPFILE"; then
+        if /snap/bin/aws secretsmanager get-secret-value \
+            --region ${var.aws_region} \
+            --secret-id "$1" \
+            --query SecretString --output text > "$TMPFILE"; then
           install -m "$3" -o "$4" -g "$4" "$TMPFILE" "$2"
           return 0
         fi
@@ -221,10 +274,50 @@ resource "aws_instance" "bastion" {
       chmod 600 $D/config
     done
 
-    fetch_secret ${aws_secretsmanager_secret.ca_key.name} /home/ssm-user/lab-root-ca-key.pem 600 ssm-user
-    fetch_secret ${aws_secretsmanager_secret.ca_cert.name} /home/ssm-user/lab-root-ca-cert.pem 644 ssm-user
+    fetch_secret ${aws_secretsmanager_secret.ca_key.name} /home/ssm-user/${local.ca_file_stem}-key.pem 600 ssm-user
+    fetch_secret ${aws_secretsmanager_secret.ca_cert.name} /home/ssm-user/${local.ca_file_stem}-cert.pem 644 ssm-user
 
     rm -f "$TMPFILE"
+
+    DEBIAN_FRONTEND=noninteractive apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y jq
+
+    # AIG certificate setup: runs at every boot until it completes, then exits at once
+    cat > /etc/aig-cert-setup.conf <<'CONF'
+    REGION=${var.aws_region}
+    AIG_NAME=${local.aig_name}
+    AIG_PRIVATE_IP=${var.aig_private_ip}
+    AIG_FQDN=${local.aig_fqdn}
+    SSH_KEY=/home/ssm-user/.ssh/${local.keypair_name}.pem
+    CA_KEY=/home/ssm-user/${local.ca_file_stem}-key.pem
+    CA_CERT=/home/ssm-user/${local.ca_file_stem}-cert.pem
+    CA_SERIAL=/home/ssm-user/${local.ca_file_stem}-cert.srl
+    CERT_DAYS=${local.aig_cert_validity_days}
+    CSR_FIELDS='${local.aig_csr_fields_shell}'
+    CONF
+
+    cat > /usr/local/bin/aig-cert-setup.sh <<'SCRIPT'
+    ${file("${path.module}/templates/aig-cert-setup.sh")}
+    SCRIPT
+    chmod 755 /usr/local/bin/aig-cert-setup.sh
+
+    cat > /etc/systemd/system/aig-cert-setup.service <<'UNIT'
+    [Unit]
+    Description=AIG certificate setup
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    ExecStart=/usr/local/bin/aig-cert-setup.sh
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+
+    systemctl daemon-reload
+    systemctl enable aig-cert-setup.service
+    systemctl start --no-block aig-cert-setup.service
   EOF
 
   user_data_replace_on_change = true
@@ -235,6 +328,7 @@ resource "aws_instance" "bastion" {
     aws_iam_role_policy.bastion_read_ca,
     aws_secretsmanager_secret_version.ca_key,
     aws_secretsmanager_secret_version.ca_cert,
+    aws_iam_role_policy.bastion_describe_aig,
   ]
 
   metadata_options {
