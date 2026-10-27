@@ -173,12 +173,14 @@ resource "aws_instance" "guardrails" {
     delete_on_termination = true
   }
 
-  user_data = templatefile("${path.module}/templates/userdata.sh.tpl", {
+  # Gzip-compressed: the rendered script is over EC2's 16 KB user-data limit
+  # uncompressed. cloud-init decompresses gzip user-data automatically.
+  user_data_base64 = base64gzip(templatefile("${path.module}/templates/guardrails-userdata.sh.tpl", {
     aws_region                     = data.aws_region.current.name
     guardrails_llm_image_s3_bucket = var.guardrails_llm_image_s3_bucket
     guardrails_llm_image_s3_key    = var.guardrails_llm_image_s3_key
     guardrails_name                = local.guardrails_name
-  })
+  }))
 
   user_data_replace_on_change = false
 
