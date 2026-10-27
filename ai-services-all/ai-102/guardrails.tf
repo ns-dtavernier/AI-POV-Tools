@@ -160,7 +160,7 @@ resource "aws_instance" "guardrails" {
   ami                         = var.guardrails_ami_id != "" ? var.guardrails_ami_id : data.aws_ami.ubuntu_22_04.id
   instance_type               = var.guardrails_instance_type
   iam_instance_profile        = aws_iam_instance_profile.guardrails.name
-  key_name                    = var.guardrails_key_pair_name != "" ? var.guardrails_key_pair_name : null
+  key_name                    = local.guardrails_key_pair_name
   subnet_id                   = aws_subnet.private.id
   vpc_security_group_ids      = [aws_security_group.guardrails.id]
   associate_public_ip_address = false
@@ -200,7 +200,7 @@ resource "aws_instance" "guardrails" {
 
 resource "null_resource" "guardrails_ready" {
   triggers = {
-    instance_id    = aws_instance.guardrails.id
+    instance_id = aws_instance.guardrails.id
     # Stored in triggers so the destroy-time provisioner can read them via
     # self (destroy provisioners cannot reference other resources or variables).
     parameter_name = "/${local.guardrails_name}/guardrails-ready"

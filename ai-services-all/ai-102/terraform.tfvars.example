@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Copy this file to terraform.tfvars and fill in the values marked REQUIRED.
 # Required values: availability_zone, aig_ami_id, guardrails_llm_image_s3_bucket, netskope_onpremappliance_licensekey,
-#                  netskope credentials (env vars), and EC2 key pair names.
+#                  netskope credentials (env vars).
 # All other values have working defaults and may be left as-is for most POVs.
 #
 # Full documentation: README.md
@@ -78,13 +78,28 @@ allowed_cidr_blocks = ["0.0.0.0/0"]
 # Display name shown in the Netskope tenant (1-15 characters).
 aig_netskope_name = "aig-lab"
 
+# ── SSH Keys ──────────────────────────────────────────────────────────────────
+# A new AWS key pair, <aws_object_unique_prefix>-keypair, is created from a private
+# key and is always used by the AIG. The private key is stored in Secrets Manager
+# and downloaded by the bastion so it can SSH to the AIG.
+
+# Local path to an existing unencrypted SSH private key (PEM or OpenSSH format).
+# Leave blank to generate a private key locally, written to my-private-key.pem in
+# this directory. A path that does not exist, or a file that is not a valid private
+# key, fails terraform plan. Keep the key out of version control (*.pem is gitignored).
+keypair_existing_private_key_local_path = ""
+
+# Existing AWS EC2 key pair to use for each instance below. Leave blank to use the
+# new <aws_object_unique_prefix>-keypair. A non-blank value must name a key pair that
+# already exists in aws_region (aws ec2 describe-key-pairs --region YOUR_REGION).
+bastion_key_pair_name    = ""
+guardrails_key_pair_name = ""
+dlpod_key_pair_name      = ""
+
 # ── Bastion Host - EC2 ────────────────────────────────────────────────────────
 
 # Fixed private IP for the bastion. Must be within public_subnet_cidr.
 bastion_private_ip = "10.0.1.10"
-
-# REQUIRED: EC2 key pair name for SSH access to the bastion instance.
-bastion_key_name = "my-key-pair"
 
 # ── AIG — EC2 ─────────────────────────────────────────────────────────────────
 
@@ -99,10 +114,6 @@ aig_instance_type = "c6a.4xlarge"
 
 # Fixed private IP for the AIG. Must be within public_subnet_cidr.
 aig_private_ip = "10.0.1.20"
-
-# REQUIRED: EC2 key pair name for SSH access to the AIG instance.
-# Must already exist in the target region (aws ec2 describe-key-pairs --region YOUR_REGION).
-aig_key_name = "my-key-pair"
 
 # Secrets Manager secret that the AIG reads at first boot.
 # Must start with "aig/" to match the deployment IAM policy.
@@ -128,9 +139,6 @@ volume_size_gb           = 100
 # This address is embedded in the AIG bootstrap secret at plan time.
 # Do not change this value after running terraform apply.
 guardrails_private_ip = "10.0.2.10"
-
-# REQUIRED: EC2 key pair name for SSH access to the Guardrails instance.
-guardrails_key_pair_name = "my-key-pair"
 
 # ── Guardrails — llm image ────────────────────────────────────────────────────
 # REQUIRED unless guardrails_ami_id is set to a custom AMI that already ships
@@ -158,6 +166,3 @@ dlpod_instance_type = "c5d.4xlarge"
 dlpod_private_ip    = "10.0.2.20"
 dlpod_persona       = "dlp-on-demand"
 dlpod_hostname      = "dlp.aig.internal"
-
-# REQUIRED: EC2 key pair name for SSH access to the DLPoD instance.
-dlpod_key_name = "my-key-pair"

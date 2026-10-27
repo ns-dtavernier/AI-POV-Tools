@@ -125,7 +125,7 @@ resource "aws_instance" "aig" {
   private_ip             = var.aig_private_ip
   iam_instance_profile   = aws_iam_instance_profile.aig.name
   vpc_security_group_ids = [aws_security_group.aig.id]
-  key_name               = var.aig_key_name
+  key_name               = local.aig_key_pair_name
 
   user_data = jsonencode({
     bootstrap_secret = aws_secretsmanager_secret.aig_bootstrap.name

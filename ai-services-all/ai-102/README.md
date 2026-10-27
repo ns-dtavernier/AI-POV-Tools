@@ -157,11 +157,18 @@ terraform apply
 | `netskope_onpremappliance_licensekey` | Netskope license key for the DLPoD appliance (sensitive — use `TF_VAR_netskope_onpremappliance_licensekey`) | — |
 | `netskope_server_url` | Netskope tenant API URL. Recommended: set via `NETSKOPE_SERVER_URL` env var (see [Environment variables](#environment-variables)). | `"https://tenant.goskope.com"` |
 | `netskope_api_key` | Netskope REST API v2 token (sensitive). Recommended: set via `NETSKOPE_API_KEY` env var. | — |
-| `aig_key_name` | EC2 key pair name for AIG SSH access | `"my-key-us-west-1"` |
-| `guardrails_key_pair_name` | EC2 key pair name for Guardrails SSH access | `"my-key-us-west-1"` |
-| `dlpod_key_name` | EC2 key pair name for DLPoD SSH access | `"my-key-us-west-1"` |
-| `bastion_key_name` | EC2 key pair name for bastion SSH access | `"my-key-us-west-1"` |
 | `bastion_private_ip` | Fixed private IP for the bastion — must be within `public_subnet_cidr` | `"10.0.1.11"` |
+
+### SSH keys
+
+A new AWS key pair, `<aws_object_unique_prefix>-keypair`, is created from a private key. The AIG always uses it. The private key is stored in Secrets Manager (`aig/<aws_object_unique_prefix>/ssh-private-key`) and the bastion downloads it at first boot to `~ubuntu/.ssh/<aws_object_unique_prefix>-keypair.pem`, so the bastion can SSH to the AIG. From an SSM session on the bastion, run `sudo -iu ubuntu` first.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `keypair_existing_private_key_local_path` | `""` | Local path to an existing unencrypted private key (PEM or OpenSSH). Blank generates a private key locally, written to `my-private-key.pem` in this directory (gitignored). A path that does not exist, or a file that is not a valid private key, fails the plan. |
+| `bastion_key_pair_name` | `""` | Blank uses the new key pair. Otherwise the name of an existing AWS key pair in `aws_region`. |
+| `guardrails_key_pair_name` | `""` | Blank uses the new key pair. Otherwise the name of an existing AWS key pair in `aws_region`. |
+| `dlpod_key_pair_name` | `""` | Blank uses the new key pair. Otherwise the name of an existing AWS key pair in `aws_region`. DLPoD does not use EC2 key injection; see `dlpod_ssh_public_key`. |
 
 ### AWS and networking
 

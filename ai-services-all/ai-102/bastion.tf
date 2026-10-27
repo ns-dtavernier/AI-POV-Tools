@@ -26,6 +26,22 @@ resource "aws_iam_role_policy_attachment" "bastion_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# Read the SSH private key (matches the AIG key pair) from Secrets Manager
+resource "aws_iam_role_policy" "bastion_read_ssh_key" {
+  name = "${local.bastion_name}-read-ssh-private-key"
+  role = aws_iam_role.bastion.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ReadSSHPrivateKeySecret"
+      Effect   = "Allow"
+      Action   = "secretsmanager:GetSecretValue"
+      Resource = aws_secretsmanager_secret.ssh_private_key.arn
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "bastion" {
   name = "${local.bastion_name}-instance-profile"
   role = aws_iam_role.bastion.name
@@ -136,18 +152,48 @@ resource "aws_instance" "bastion" {
   iam_instance_profile   = aws_iam_instance_profile.bastion.name
   vpc_security_group_ids = [aws_security_group.bastion.id]
 
-  key_name                    = var.bastion_key_name
+  key_name                    = local.bastion_key_pair_name
   associate_public_ip_address = true
 
-  # Install and start the SSM agent — required for Session Manager on Ubuntu
+  # Install and start the SSM agent — required for Session Manager on Ubuntu.
+  # Then download the SSH private key from Secrets Manager into the ubuntu
+  # user's ~/.ssh so the bastion can SSH to the AIG. The IAM role policy can
+  # take a few seconds to propagate, so the download is retried.
   user_data = <<-EOF
     #!/bin/bash
     snap install amazon-ssm-agent --classic
     systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
     systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+
+    snap install aws-cli --classic
+
+    KEY=/home/ubuntu/.ssh/${local.keypair_name}.pem
+    install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
+    umask 077
+    for i in $(seq 1 30); do
+      if /snap/bin/aws secretsmanager get-secret-value \
+          --region ${var.aws_region} \
+          --secret-id ${aws_secretsmanager_secret.ssh_private_key.name} \
+          --query SecretString --output text > "$KEY.tmp"; then
+        mv "$KEY.tmp" "$KEY"
+        chown ubuntu:ubuntu "$KEY"
+        chmod 600 "$KEY"
+        printf 'Host *\n  IdentityFile %s\n' "$KEY" > /home/ubuntu/.ssh/config
+        chown ubuntu:ubuntu /home/ubuntu/.ssh/config
+        chmod 600 /home/ubuntu/.ssh/config
+        break
+      fi
+      rm -f "$KEY.tmp"
+      sleep 10
+    done
   EOF
 
   user_data_replace_on_change = true
+
+  depends_on = [
+    aws_iam_role_policy.bastion_read_ssh_key,
+    aws_secretsmanager_secret_version.ssh_private_key,
+  ]
 
   metadata_options {
     http_tokens                 = "required"

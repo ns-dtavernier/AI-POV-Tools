@@ -150,13 +150,45 @@ variable "secret_name" {
   }
 }
 
-# ── Bastion Host - EC2 ────────────────────────────────────────────────────────
+# ── SSH Keys ──────────────────────────────────────────────────────────────────
+# One key pair, <aws_object_unique_prefix>-keypair, is created in AWS from a
+# private key and is always used by the AIG. The private key is stored in
+# Secrets Manager and downloaded by the bastion so it can SSH to the AIG.
 
-variable "bastion_key_name" {
-  description = "EC2 key pair name for bastion SSH access (optional). Leave null to use SSM Session Manager only."
+variable "keypair_existing_private_key_local_path" {
+  description = "Local path to an existing unencrypted SSH private key (PEM or OpenSSH format) to use for the new <aws_object_unique_prefix>-keypair AWS key pair. Leave blank to generate a private key locally, written to my-private-key.pem in the project root directory. A path that does not exist, or a file that is not a valid private key, fails the plan."
   type        = string
-  default     = null
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.keypair_existing_private_key_local_path == "" || fileexists(pathexpand(var.keypair_existing_private_key_local_path))
+    error_message = "keypair_existing_private_key_local_path does not point to an existing file. Provide a valid path to a private key, or leave it blank to generate one."
+  }
 }
+
+variable "bastion_key_pair_name" {
+  description = "Name of an existing AWS EC2 key pair to use for the bastion instance. Leave blank to use the new <aws_object_unique_prefix>-keypair. A non-blank value must name a key pair that already exists in aws_region."
+  type        = string
+  default     = ""
+  nullable    = false
+}
+
+variable "guardrails_key_pair_name" {
+  description = "Name of an existing AWS EC2 key pair to use for the Guardrails instance. Leave blank to use the new <aws_object_unique_prefix>-keypair. A non-blank value must name a key pair that already exists in aws_region."
+  type        = string
+  default     = ""
+  nullable    = false
+}
+
+variable "dlpod_key_pair_name" {
+  description = "Name of an existing AWS EC2 key pair to use for the DLPoD instance. Leave blank to use the new <aws_object_unique_prefix>-keypair. A non-blank value must name a key pair that already exists in aws_region."
+  type        = string
+  default     = ""
+  nullable    = false
+}
+
+# ── Bastion Host - EC2 ────────────────────────────────────────────────────────
 
 variable "bastion_private_ip" {
   description = "Fixed private IP for the bastion instance. Must be within public_subnet_cidr (AWS reserves the first four addresses of a subnet) and must not conflict with aig_private_ip."
@@ -192,12 +224,6 @@ variable "aig_private_ip" {
     condition     = can(cidrhost(format("%s/32", var.aig_private_ip), 0))
     error_message = "Must be a valid IPv4 address."
   }
-}
-
-variable "aig_key_name" {
-  description = "EC2 key pair name for AIG SSH access (optional). Leave null to use SSM Session Manager only."
-  type        = string
-  default     = null
 }
 
 # ── Guardrails — EC2 ──────────────────────────────────────────────────────────
@@ -236,12 +262,6 @@ variable "volume_size_gb" {
     condition     = var.volume_size_gb >= 80 && var.volume_size_gb <= 500
     error_message = "Must be between 80 and 500."
   }
-}
-
-variable "guardrails_key_pair_name" {
-  description = "EC2 key pair name for Guardrails SSH access. Leave empty to use SSM Session Manager only (recommended)."
-  type        = string
-  default     = ""
 }
 
 variable "guardrails_private_ip" {
@@ -308,12 +328,6 @@ variable "dlpod_private_ip" {
     condition     = can(cidrhost(format("%s/32", var.dlpod_private_ip), 0))
     error_message = "Must be a valid IPv4 address."
   }
-}
-
-variable "dlpod_key_name" {
-  description = "EC2 key pair name for DLPoD SSH access (optional)"
-  type        = string
-  default     = null
 }
 
 variable "dlpod_ssh_public_key" {

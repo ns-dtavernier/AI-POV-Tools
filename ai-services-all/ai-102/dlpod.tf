@@ -183,7 +183,7 @@ resource "aws_instance" "dlpod" {
   private_ip             = var.dlpod_private_ip
   iam_instance_profile   = aws_iam_instance_profile.dlpod.name
   vpc_security_group_ids = [aws_security_group.dlpod.id]
-  key_name               = var.dlpod_key_name
+  key_name               = local.dlpod_key_pair_name
 
   # Raw JSON bootstrap.json — read by nsbootstrap.service at first boot.
   user_data = jsonencode(local.dlpod_bootstrap)
