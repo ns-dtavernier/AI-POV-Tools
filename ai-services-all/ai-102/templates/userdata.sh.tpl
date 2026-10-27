@@ -52,6 +52,18 @@ docker_ver() {
   [ -n "$v" ] || v=$(pkg_ver docker.io)
   echo "$v"
 }
+
+# Publish a status to the SSM parameter that the Terraform readiness gate
+# (null_resource.guardrails_ready) polls; "healthy" signals readiness.
+# Usage: aws_ssm_put_parameter_guardrails_ready <value>
+aws_ssm_put_parameter_guardrails_ready() {
+  aws ssm put-parameter \
+    --name "/${guardrails_name}/guardrails-ready" \
+    --value "$1" \
+    --type String \
+    --overwrite \
+    --region ${aws_region}
+}
 LIBMARKER
 . /opt/guardrails-lib.sh
 
@@ -70,9 +82,13 @@ command -v aws >/dev/null 2>&1 || $APT install -y awscli
 
 # Clear any stale readiness signal from a previous deployment so the
 # Terraform readiness gate does not complete prematurely on re-deploy.
-aws ssm delete-parameter \
-  --name "/${guardrails_name}/guardrails-ready" \
-  --region ${aws_region} 2>/dev/null || true
+#aws ssm delete-parameter \
+#  --name "/${guardrails_name}/guardrails-ready" \
+#  --region ${aws_region} 2>/dev/null || true
+
+# Reset the readiness signal to indicate that Phase 1 is running and to prevent
+# Terraform from completing prematurely on re-deploy.
+aws_ssm_put_parameter_guardrails_ready "Guardrails just starting"
 
 # ---- Snapshot component versions BEFORE upgrading anything ----
 DRIVER_PKG=$(driver_pkg)
@@ -84,8 +100,12 @@ DRIVER_PKG=$(driver_pkg)
 cat "$STATE_DIR/before.env"
 . "$STATE_DIR/before.env"
 
+aws_ssm_put_parameter_guardrails_ready "Guardrails updating OS"
+
 # ---- OS package upgrade ----
 $APT upgrade -y
+
+aws_ssm_put_parameter_guardrails_ready "Guardrails installing/updating NVIDIA drivers"
 
 # ---- NVIDIA driver: install if missing, upgrade if present ----
 REBOOT_NEEDED=0
@@ -116,6 +136,7 @@ fi
 # A kernel upgrade also needs a reboot (and the NVIDIA module must match it).
 if [ -f /var/run/reboot-required ]; then
   echo "$(ts) System flagged reboot-required."
+  aws_ssm_put_parameter_guardrails_ready "Guardrails reboot required"
   REBOOT_NEEDED=1
 fi
 
@@ -136,6 +157,8 @@ STATE_DIR=/var/lib/guardrails-setup
 APT="apt-get -o DPkg::Lock::Timeout=300"
 export DEBIAN_FRONTEND=noninteractive
 
+aws_ssm_put_parameter_guardrails_ready "Guardrails phase2 starting"
+
 # Fetch instance ID via IMDSv2 for error logging
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
@@ -151,6 +174,8 @@ trap 'echo "ERROR: Guardrails Phase 2 setup failed on $${INSTANCE_ID}. \
 # the Guardrails container must be restarted to pick the changes up.
 CHANGED=""
 
+aws_ssm_put_parameter_guardrails_ready "Guardrails verifying NVIDIA driver loaded"
+
 # ---- NVIDIA driver: verify it is loaded ----
 # Allow up to 2 minutes for the kernel module after a reboot.
 for i in $(seq 1 12); do
@@ -164,8 +189,12 @@ if [ "$AFTER_DRIVER_VER" != "$BEFORE_DRIVER_VER" ]; then
   CHANGED="$CHANGED driver"
 fi
 
+aws_ssm_put_parameter_guardrails_ready "Guardrails installing system tools"
+
 $APT update -y
 $APT install -y apt-transport-https ca-certificates gnupg lsb-release jq curl
+
+aws_ssm_put_parameter_guardrails_ready "Guardrails installing/updating NVIDIA Container Toolkit"
 
 # ---- NVIDIA Container Toolkit: install if missing, upgrade if present ----
 if ! grep -rqs 'nvidia.github.io/libnvidia-container' /etc/apt/sources.list /etc/apt/sources.list.d/; then
@@ -182,6 +211,8 @@ $APT install -y nvidia-container-toolkit
 if [ "$(pkg_ver nvidia-container-toolkit)" != "$BEFORE_TOOLKIT_VER" ]; then
   CHANGED="$CHANGED nvidia-container-toolkit"
 fi
+
+aws_ssm_put_parameter_guardrails_ready "Guardrails installing/updating Docker"
 
 # ---- Docker: install if missing, upgrade if present ----
 # If the AMI uses Ubuntu's docker.io, upgrade that rather than swapping it
@@ -205,12 +236,16 @@ if [ "$(docker_ver)" != "$BEFORE_DOCKER_VER" ]; then
   CHANGED="$CHANGED docker"
 fi
 
+aws_ssm_put_parameter_guardrails_ready "Guardrails configuring Docker to use NVIDIA runtime"
+
 # ---- Configure Docker to use the NVIDIA runtime ----
 # nvidia-ctk is idempotent; restart the daemon only if the config changed or
 # Docker itself was installed/upgraded.
 DAEMON_JSON_BEFORE=$(md5sum /etc/docker/daemon.json 2>/dev/null || true)
 nvidia-ctk runtime configure --runtime=docker
 DAEMON_JSON_AFTER=$(md5sum /etc/docker/daemon.json 2>/dev/null || true)
+
+aws_ssm_put_parameter_guardrails_ready "Guardrails starting and verifying Docker"
 
 systemctl enable docker
 if [ "$DAEMON_JSON_BEFORE" != "$DAEMON_JSON_AFTER" ]; then
@@ -233,10 +268,14 @@ LOCAL_IMAGE=$(docker images --format '{{.Repository}}:{{.Tag}}' \
 
 if [ -n "$LOCAL_IMAGE" ]; then
   echo "$(ts) Guardrails LLM image already present: $${LOCAL_IMAGE}"
+  aws_ssm_put_parameter_guardrails_ready "Guardrails LLM image found; skipping download from S3."
+
 else
   echo "$(ts) Guardrails LLM image not found locally; downloading from S3."
+  aws_ssm_put_parameter_guardrails_ready "Guardrails LLM image not found locally; downloading from S3."
   if [ -z "${guardrails_llm_image_s3_bucket}" ]; then
     echo "$(ts) ERROR: no local Guardrails LLM image and guardrails_llm_image_s3_bucket is not set."
+    aws_ssm_put_parameter_guardrails_ready "ERROR: no local Guardrails LLM image and guardrails_llm_image_s3_bucket is not set."
     false
   fi
   # aws_region, guardrails_llm_image_s3_bucket, guardrails_llm_image_s3_key were substituted by Terraform templatefile.
@@ -244,6 +283,7 @@ else
     --region ${aws_region}
 
   # Extract the image tag from the manifest, then load the image
+  aws_ssm_put_parameter_guardrails_ready "Guardrails loading LLM image"
   LOCAL_IMAGE=$(tar -xOf /tmp/aisecurity-llm.tgz manifest.json 2>/dev/null \
     | jq -r '.[0].RepoTags[0]')
   docker load -i /tmp/aisecurity-llm.tgz
@@ -258,6 +298,7 @@ CONTAINER_ID=$(docker ps -aq --filter "ancestor=$${LOCAL_IMAGE}" | head -1)
 
 if [ -z "$CONTAINER_ID" ]; then
   echo "$(ts) No Guardrails container exists; creating one."
+  aws_ssm_put_parameter_guardrails_ready "Guardrails creating LLM container"
   docker run -d \
     --name guardrails \
     --gpus all \
@@ -273,29 +314,33 @@ else
   docker update --restart=unless-stopped "$CONTAINER_ID"
   if [ -n "$CHANGED" ]; then
     echo "$(ts) Components changed ($${CHANGED# }); restarting container $${CONTAINER_ID}."
+    aws_ssm_put_parameter_guardrails_ready "Guardrails restarting LLM container"
     docker restart "$CONTAINER_ID"
   else
     echo "$(ts) Nothing changed; ensuring container $${CONTAINER_ID} is running."
+    aws_ssm_put_parameter_guardrails_ready "Guardrails container restart not needed; running"
     docker start "$CONTAINER_ID"
   fi
 fi
 
-# ---- Wait up to 5 minutes for the service to become healthy ----
+# ---- Wait up to 10 minutes for the service to become healthy ----
 # Returns 0 as soon as /ping reports Healthy, 1 if the timeout expires.
+aws_ssm_put_parameter_guardrails_ready "Guardrails waiting for container to be healthy (up to 10 minutes)"
 wait_healthy() {
   local attempts=0
   until curl -sf http://localhost:8080/ping | grep -q Healthy; do
     attempts=$(( attempts + 1 ))
-    [ "$attempts" -ge 30 ] && return 1
+    [ "$attempts" -ge 60 ] && return 1
     sleep 10
   done
 }
 
 if ! wait_healthy; then
-  # Restart the container once and give it another 5 minutes. The container
+  # Restart the container once and give it another 10 minutes. The container
   # is looked up again because the create branch above does not set CONTAINER_ID.
   CONTAINER_ID=$(docker ps -aq --filter "ancestor=$${LOCAL_IMAGE}" | head -1)
-  echo "$(ts) WARNING: Guardrails not healthy after 5 minutes; restarting container $${CONTAINER_ID} once."
+  echo "$(ts) WARNING: Guardrails not healthy after 10 minutes; restarting container $${CONTAINER_ID} once."
+  aws_ssm_put_parameter_guardrails_ready "WARNING: Guardrails container not healthy after 10 minutes; restarting"
   docker restart "$CONTAINER_ID" || echo "$(ts) WARNING: docker restart failed."
   wait_healthy || true
 fi
@@ -303,17 +348,13 @@ fi
 # ---- Log final health status and signal readiness ----
 if curl -sf http://localhost:8080/ping | grep -q Healthy; then
   echo "$(ts) SUCCESS: Guardrails service is healthy and ready on port 8080."
-  aws ssm put-parameter \
-    --name "/${guardrails_name}/guardrails-ready" \
-    --value "healthy" \
-    --type String \
-    --overwrite \
-    --region ${aws_region}
+  aws_ssm_put_parameter_guardrails_ready "healthy"
 else
   echo "$(ts) WARNING: Guardrails service did not become healthy within 10 minutes:" \
     "not healthy after initial 5 minutes; restarted container; not healthy 5" \
     "minutes after restart. Container may still be starting." \
     "Re-check with: curl http://localhost:8080/ping"
+  aws_ssm_put_parameter_guardrails_ready "ERROR: Guardrail container did not become healthy within 20 minutes"
 fi
 PHASE2MARKER
 

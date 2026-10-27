@@ -220,24 +220,27 @@ resource "null_resource" "guardrails_ready" {
 
   provisioner "local-exec" {
     command = <<-EOF
-      echo "Purging stale readiness parameter from any previous deployment..."
-      aws ssm delete-parameter \
-          --name "/${local.guardrails_name}/guardrails-ready" \
-          --region ${var.aws_region} 2>/dev/null || true
+      #echo "Purging stale readiness parameter from any previous deployment..."
+      #aws ssm delete-parameter \
+      #    --name "/${local.guardrails_name}/guardrails-ready" \
+      #    --region ${var.aws_region} 2>/dev/null || true
 
       echo "Waiting for Guardrails service to become healthy (up to 90 minutes)..."
       n=0
-      until aws ssm get-parameter \
-          --name "/${local.guardrails_name}/guardrails-ready" \
-          --region ${var.aws_region} \
-          --query "Parameter.Value" \
-          --output text 2>/dev/null | grep -q "^healthy$"; do
+      while true; do
+        STATUS=$(aws ssm get-parameter \
+            --name "/${local.guardrails_name}/guardrails-ready" \
+            --region ${var.aws_region} \
+            --query "Parameter.Value" \
+            --output text 2>/dev/null || true)
+        [ "$STATUS" = "healthy" ] && break
         n=$((n + 1))
         if [ $n -ge 90 ]; then
           echo "ERROR: Guardrails did not become healthy within 90 minutes."
           exit 1
         fi
-        printf "  still waiting after $n minutes... %s\n" "$(date '+%H:%M:%S')"
+        [ -n "$STATUS" ] || STATUS="(guardrails-ready parameter not set yet)"
+        printf "%s %s\n" "$(date '+%H:%M:%S')" "$STATUS"
         sleep 60
       done
       echo "Guardrails is healthy. Creating AIG instance."
