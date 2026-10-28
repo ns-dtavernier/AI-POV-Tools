@@ -10,6 +10,10 @@
 
 locals {
   aig_fqdn = aws_eip.aig.public_dns
+
+  # AI Guardrails service host, set on the AIG by the bootstrap secret and
+  # re-checked by the bastion's aig-cert-setup.sh (hostconfig API).
+  guardrails_host = "http://${var.guardrails_private_ip}:8080/invocations"
 }
 
 # ── Netskope: register appliance + generate enrollment token ──────────────────
@@ -55,8 +59,11 @@ resource "aws_secretsmanager_secret_version" "aig_bootstrap" {
   secret_string = jsonencode({
     bootstrap        = true
     enrollment_token = netskope_aig_appliance_enrollment_token.this.enrollment_token
+    # host_url rather than the documented "host": the AIG Configuration API's
+    # hostconfig endpoint uses host_url, and "host" was not applied in testing.
+    # aig-cert-setup.sh re-checks and sets this host after enrollment either way.
     ai_guardrails = {
-      host = "http://${var.guardrails_private_ip}:8080/invocations"
+      host_url = local.guardrails_host
     }
     dlp = {
       certificate = data.local_file.ca_cert.content

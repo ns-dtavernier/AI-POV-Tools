@@ -13,6 +13,10 @@
 #   6. If the AIG has no certificate: request a CSR, sign it with the lab root
 #      CA, and install the signed certificate
 #   7. AIG certificate status is "Active"
+#   8. AI Guardrails host (GUARDRAILS_HOST) is set on the AIG: GET
+#      /v1/config/ai-guardrails and, if host_config.host_url is missing or
+#      different, PUT /v1/config/ai-guardrails/hostconfig {"host_url": ...},
+#      then GET again to confirm
 #
 # Settings (including the CA key, certificate and serial file paths) come from
 # /etc/aig-cert-setup.conf, written by the bastion user-data.
@@ -40,6 +44,8 @@ HOME_DIR=/home/ssm-user
 CSR=$HOME_DIR/aig-cert-request.csr
 SIGNED=$HOME_DIR/aig-cert-signed.pem
 NOT_FOUND='resource not found: failed to get certificate status'
+GR_PATH=/v1/config/ai-guardrails
+GR_CUR=
 
 ERRF=$(mktemp)
 trap 'rm -f "$ERRF"' EXIT
@@ -185,9 +191,47 @@ verify_active() {
   log "AIG certificate status is Active"
 }
 
+# read_guardrails_host — GET the AI Guardrails config and set GR_CUR to the
+# configured host_url (empty when no host is configured).
+read_guardrails_host() {
+  api GET "$GR_PATH" || return 1
+  [ "$HTTP_CODE" = 200 ] || { err "GET $GR_PATH failed (HTTP $HTTP_CODE): $BODY"; return 1; }
+  GR_CUR=$(jget .host_config.host_url)
+}
+
+# The bootstrap secret's ai_guardrails block is applied once after enrollment and
+# a failure there is silent (enrollment still succeeds), so re-check the host
+# here and set it through the config API if it is missing or different.
+setup_guardrails_host() {
+  [ -n "$GUARDRAILS_HOST" ] || { err "GUARDRAILS_HOST is not set in $CONF"; return 1; }
+  local body
+  read_guardrails_host || return 1
+  if [ "$GR_CUR" = "$GUARDRAILS_HOST" ]; then
+    log "AI Guardrails host_url is already $GR_CUR"
+    return 0
+  fi
+  log "AI Guardrails host_url is '${GR_CUR:-<not set>}'; setting it to $GUARDRAILS_HOST"
+
+  body=$(jq -cn --arg host_url "$GUARDRAILS_HOST" '{host_url: $host_url}') \
+    || { err "could not build the AI Guardrails hostconfig request body"; return 1; }
+  api PUT "$GR_PATH/hostconfig" "$body" || return 1
+  case "$HTTP_CODE" in
+    2*) log "Set the AI Guardrails host_url on the AIG (HTTP $HTTP_CODE)" ;;
+    *) err "AI Guardrails hostconfig update failed (HTTP $HTTP_CODE): $BODY"; return 1 ;;
+  esac
+}
+
+verify_guardrails_host() {
+  read_guardrails_host || return 1
+  [ "$GR_CUR" = "$GUARDRAILS_HOST" ] \
+    || { err "AI Guardrails host_url is '$GR_CUR', expected '$GUARDRAILS_HOST'"; return 1; }
+  log "AI Guardrails host_url is $GR_CUR"
+}
+
 run_checks() {
   check_prereqs && check_aig_running && get_fqdn && get_token \
-    && check_bootstrap && setup_certificate && verify_active
+    && check_bootstrap && setup_certificate && verify_active \
+    && setup_guardrails_host && verify_guardrails_host
 }
 
 # ── main ─────────────────────────────────────────────────────────────────────

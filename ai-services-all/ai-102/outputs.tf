@@ -34,7 +34,7 @@ output "bootstrap_secret_arn" {
 
 output "guardrails_host_url" {
   description = "Guardrails host URL embedded in the AIG bootstrap secret. The AIG routes LLM inspection requests here."
-  value       = "http://${var.guardrails_private_ip}:8080/invocations"
+  value       = local.guardrails_host
 }
 
 output "guardrails_aws_instance_id" {

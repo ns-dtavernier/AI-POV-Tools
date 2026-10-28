@@ -280,7 +280,8 @@ The bastion runs `aig-cert-setup.service` at every boot (script: [templates/aig-
 4. SSH to `nsadmin@<aig_private_ip>` and run `enable-api --ttl 1h` to get an AIG Config API token.
 5. `GET https://<aig_private_ip>:8443/v1/config/bootstrap` reports `status` = `completed`.
 6. `GET /v1/config/certificate/status`. If the AIG has no certificate (`resource not found: failed to get certificate status`), `POST /v1/config/certificate/csr` with the `aig_cert_*` fields, save the CSR as `/home/ssm-user/aig-cert-request.csr`, sign it with the lab root CA (`subjectAltName = DNS:<fqdn>`, `extendedKeyUsage = serverAuth`) into `/home/ssm-user/aig-cert-signed.pem`, and `POST /v1/config/certificate/install`. A certificate that is already `Active` is left alone.
-7. `GET /v1/config/certificate/status` reports `Active`, and the script writes `/etc/aig-cert-setup-complete`.
+7. `GET /v1/config/certificate/status` reports `Active`.
+8. `GET /v1/config/ai-guardrails`. The bootstrap secret's `ai_guardrails` block is applied once after enrollment and a failure is silent, so if `host_config.host_url` is missing or differs from the `guardrails_host_url` output, the script sets it with `PUT /v1/config/ai-guardrails/hostconfig` (`{"host_url": ...}`, HTTP 204) and reads it back to confirm. The script then writes `/etc/aig-cert-setup-complete`.
 
 Progress and errors are logged with timestamps to `/var/log/aig-cert-setup.log`. From an SSM session, follow it with `sudo tail -f /var/log/aig-cert-setup.log`. To re-run the setup, remove `/etc/aig-cert-setup-complete` and run `sudo systemctl restart aig-cert-setup`.
 

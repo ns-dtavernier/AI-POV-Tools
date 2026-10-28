@@ -287,6 +287,7 @@ resource "aws_instance" "bastion" {
     AIG_NAME=${local.aig_name}
     AIG_PRIVATE_IP=${var.aig_private_ip}
     AIG_FQDN=${local.aig_fqdn}
+    GUARDRAILS_HOST=${local.guardrails_host}
     SSH_KEY=/home/ssm-user/.ssh/${local.keypair_name}.pem
     CA_KEY=/home/ssm-user/${local.ca_file_stem}-key.pem
     CA_CERT=/home/ssm-user/${local.ca_file_stem}-cert.pem
