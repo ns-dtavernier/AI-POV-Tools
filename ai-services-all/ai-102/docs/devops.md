@@ -50,7 +50,7 @@ The AIG bootstrap secret (`aig/<aws_object_unique_prefix>/bootstrap` by default)
   "bootstrap": true,
   "enrollment_token": "<single-use token>",
   "ai_guardrails": {
-    "host_url": "http://10.0.2.10:8080/invocations"
+    "host": "http://10.0.2.10:8080/invocations"
   },
   "dlp": {
     "certificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
@@ -115,7 +115,7 @@ The leaf cert and private key go only to DLPoD:
    {
      "bootstrap": true,
      "enrollment_token": "<single-use token>",
-     "ai_guardrails": { "host_url": "http://10.0.2.10:8080/invocations" },
+     "ai_guardrails": { "host": "http://10.0.2.10:8080/invocations" },
      "dlp": {
        "certificate": "-----BEGIN CERTIFICATE-----\n<CA cert PEM>\n-----END CERTIFICATE-----\n",
        "host": "https://dlp.aig.internal"
@@ -129,7 +129,7 @@ The leaf cert and private key go only to DLPoD:
 10. **EC2 user-data** contains only: `{ "bootstrap_secret": "aig/<aws_object_unique_prefix>/bootstrap" }`
 11. AIG calls `secretsmanager:GetSecretValue` using its IAM instance profile
 12. AIG uses `enrollment_token` to register with the Netskope tenant
-13. AIG configures Guardrails at `ai_guardrails.host_url`
+13. AIG configures Guardrails at `ai_guardrails.host`
 14. AIG validates and configures DLPoD at `dlp.host` — see AIG Validation section
 
 **Dependency:** AIG EC2 is created only after both `null_resource.guardrails_ready` and `null_resource.dlpod_ready` succeed — Guardrails and DLPoD must be serving before the AIG tries to validate them.

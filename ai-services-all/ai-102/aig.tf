@@ -59,11 +59,12 @@ resource "aws_secretsmanager_secret_version" "aig_bootstrap" {
   secret_string = jsonencode({
     bootstrap        = true
     enrollment_token = netskope_aig_appliance_enrollment_token.this.enrollment_token
-    # host_url rather than the documented "host": the AIG Configuration API's
-    # hostconfig endpoint uses host_url, and "host" was not applied in testing.
-    # aig-cert-setup.sh re-checks and sets this host after enrollment either way.
+    # The bootstrap payload key is "host" (the AIG rejects "host_url" with HTTP 400,
+    # "ai_guardrails.host is a required field"). The Configuration API's hostconfig
+    # endpoint uses host_url instead; aig-cert-setup.sh re-checks and sets the host
+    # through that API after enrollment.
     ai_guardrails = {
-      host_url = local.guardrails_host
+      host = local.guardrails_host
     }
     dlp = {
       certificate = data.local_file.ca_cert.content

@@ -239,6 +239,7 @@ run_checks() {
 log "AIG certificate setup started"
 until run_checks; do
   log "Checks did not complete; restarting them in 1 minute"
+  log "***"
   sleep 60
 done
 touch "$DONE"
