@@ -203,13 +203,14 @@ aig_private_ip = "10.0.1.20"
 #enable_bastion = true
 
 # Which readiness gates Terraform waits for before creating the next component.
+# All default to false (no waiting); set true to wait.
 # DLPoD waits for Guardrails to be healthy (about 30 minutes) before it is created.
 #wait_for_guardrails_to_deploy_dlpod = false
 # The AIG waits for Guardrails to be healthy / DLPoD's HTTPS service to answer.
-#wait_for_guardrails_to_deploy_aig = true
-#wait_for_dlpod_to_deploy_aig      = true
+#wait_for_guardrails_to_deploy_aig = false
+#wait_for_dlpod_to_deploy_aig      = false
 # terraform apply waits until the AIG is enrolled and configured (needs the bastion).
-#wait_for_aig_to_complete_template = true
+#wait_for_aig_to_complete_template = false
 
 # ── Guardrails — EC2 ──────────────────────────────────────────────────────────
 

@@ -80,7 +80,7 @@ Internet
 
 ## How long does deployment take?
 
-`terraform apply` blocks at two readiness gates before creating the AIG and a third after it. Observed timings on `g4dn.xlarge` in us-west-1:
+With the `wait_for_*` variables set to `true` (they default to `false`; see [Deployment ordering](#deployment-ordering)), `terraform apply` blocks at readiness gates for Guardrails and DLPoD before creating the AIG and at a third after it. With the defaults it creates everything without waiting and finishes much sooner than the totals below. Observed timings on `g4dn.xlarge` in us-west-1:
 
 | Stage | Duration | What's happening |
 |-------|----------|-----------------|
@@ -91,6 +91,13 @@ Internet
 | AIG creation | ~2–3 min | Enrollment token written to Secrets Manager, AIG EC2 boots and self-enrolls with Netskope tenant |
 | AIG readiness | ~3–10 min (estimate, not yet measured) | The bastion confirms enrollment, installs the certificate, and confirms the DLP and Guardrails host settings (`aig_ready` gate) |
 | **Total** | **~35–50 min** | |
+
+Observed with a pre-built Guardrails VM (`guardrails_ami_id` set), which is the fast path:
+
+| `wait_for_*` variables | `terraform apply` takes | Fully ready |
+|------------------------|-------------------------|-------------|
+| `true` | about 30 minutes | When apply finishes. Everything is truly ready. |
+| `false` (default) | about 5 minutes | About 30 minutes after apply started. Apply finishes before DLPoD and Guardrails are ready; see [Deployment ordering](#deployment-ordering). |
 
 ---
 
@@ -161,9 +168,9 @@ terraform apply
 | `bastion_private_ip` | Fixed private IP for the bastion — must be within `public_subnet_cidr` | `"10.0.1.11"` |
 | `enable_bastion` | Create the bastion and everything that exists only for it. `true` by default; see [Removing the bastion](#removing-the-bastion). | `true` |
 | `wait_for_guardrails_to_deploy_dlpod` | Wait for Guardrails to be healthy before creating DLPoD. See [Deployment ordering](#deployment-ordering). | `false` |
-| `wait_for_guardrails_to_deploy_aig` | Wait for Guardrails to be healthy before creating the AIG | `true` |
-| `wait_for_dlpod_to_deploy_aig` | Wait for DLPoD's HTTPS service before creating the AIG | `true` |
-| `wait_for_aig_to_complete_template` | Wait for `aig-ready` to be healthy before `terraform apply` finishes | `true` |
+| `wait_for_guardrails_to_deploy_aig` | Wait for Guardrails to be healthy before creating the AIG | `false` |
+| `wait_for_dlpod_to_deploy_aig` | Wait for DLPoD's HTTPS service before creating the AIG | `false` |
+| `wait_for_aig_to_complete_template` | Wait for `aig-ready` to be healthy before `terraform apply` finishes | `false` |
 
 ### SSH keys
 
@@ -325,16 +332,26 @@ Notes:
 
 ### Deployment ordering
 
-Four variables control whether Terraform waits for a readiness gate before creating the next component:
+Four variables control whether Terraform waits for a readiness gate before creating the next component. All default to `false`, so `terraform apply` creates everything without waiting and finishes quickly; set them to `true` to have Terraform wait. The `true` effects are:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `wait_for_guardrails_to_deploy_dlpod` | `false` | DLPoD is not created until Guardrails reports healthy (about 30 minutes). `false`: as soon as the Guardrails instance exists. |
-| `wait_for_guardrails_to_deploy_aig` | `true` | The AIG is not created until Guardrails reports healthy. `false`: as soon as the Guardrails instance exists; the AIG may then link to Guardrails before the service is running. |
-| `wait_for_dlpod_to_deploy_aig` | `true` | The AIG is not created until DLPoD's HTTPS service answers. `false`: as soon as the DLPoD instance exists. |
-| `wait_for_aig_to_complete_template` | `true` | `terraform apply` does not finish until `aig-ready` is healthy. `false`: it finishes once the AIG is created. Needs `enable_bastion = true`. |
+| `wait_for_guardrails_to_deploy_aig` | `false` | The AIG is not created until Guardrails reports healthy. `false`: as soon as the Guardrails instance exists. The AIG's bootstrap then fails to set the Guardrails host, and the bastion sets it later (see below). |
+| `wait_for_dlpod_to_deploy_aig` | `false` | The AIG is not created until DLPoD's HTTPS service answers. `false`: as soon as the DLPoD instance exists. The AIG's bootstrap then fails to set the DLP host, and the bastion sets it later (see below). |
+| `wait_for_aig_to_complete_template` | `false` | `terraform apply` does not finish until `aig-ready` is healthy. `false`: it finishes once the AIG is created. Needs `enable_bastion = true`. |
 
 With `false`, a gate polls nothing but its dependent is still created only after the instance it would have waited for exists (about 2 minutes), because Terraform's dependencies are static.
+
+#### What to expect with the waits on or off
+
+The timings below are for a pre-built Guardrails VM.
+
+- **The AIG Configuration API rejects a host that isn't answering.** Setting the DLP host (`PUT /v1/config/dlp/hostconfig`) fails while DLPoD isn't responding, and setting the AI Guardrails host (`PUT /v1/config/ai-guardrails/hostconfig`) fails while Guardrails isn't responding.
+- **All waits `true`:** `terraform apply` takes about 30 minutes and everything is truly ready when it finishes. DLPoD and Guardrails are already healthy when the AIG boots, so its bootstrap sets both hosts.
+- **All waits `false`:** `terraform apply` takes about 5 minutes, but everything is not truly ready until about 30 minutes after Terraform started. The AIG starts while DLPoD and Guardrails are still booting, so its bootstrap completes but fails to set the DLP and AI Guardrails hosts. The bastion script corrects this: it keeps retrying both host settings until the instances are healthy and the AIG accepts them. The `dlp` and `guardrails` steps in `aig-ready` show `waiting on` until then, with the API's error as the last error.
+- **Which to use:** use `false` for a quick apply when you can wait for `aig-ready` to read `healthy:<id>` afterwards; use `true` when something needs the stack to be working the moment apply finishes.
+- **Needs the bastion:** the catch-up depends on the bastion. With `enable_bastion = false` from the start, a failed bootstrap host setting is not corrected.
 
 ## Remote state
 

@@ -512,21 +512,21 @@ variable "wait_for_guardrails_to_deploy_dlpod" {
 }
 
 variable "wait_for_guardrails_to_deploy_aig" {
-  description = "true: the AIG instance is not created until Guardrails reports healthy. false: the AIG is created as soon as the Guardrails instance exists (the AIG may then link to Guardrails before the service is running)."
+  description = "true: the AIG instance is not created until Guardrails reports healthy. false: the AIG is created as soon as the Guardrails instance exists; its bootstrap then fails to set the Guardrails host (the Config API rejects it while Guardrails is not responding) and the bastion sets it later."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "wait_for_dlpod_to_deploy_aig" {
-  description = "true: the AIG instance is not created until the DLPoD HTTPS service answers on port 443 (probed from the bastion, or from the Guardrails instance when enable_bastion is false). false: the AIG is created as soon as the DLPoD instance exists."
+  description = "true: the AIG instance is not created until the DLPoD HTTPS service answers on port 443 (probed from the bastion, or from the Guardrails instance when enable_bastion is false). false: the AIG is created as soon as the DLPoD instance exists; its bootstrap then fails to set the DLP host (the Config API rejects it while DLPoD is not responding) and the bastion sets it later."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "wait_for_aig_to_complete_template" {
   description = "true: terraform apply does not finish until the aig-ready parameter reads healthy for this AIG (enrolled, certificate Active, DLP and Guardrails hosts set). false: apply finishes once the AIG is created. Has no effect when enable_bastion is false, because the bastion reports the AIG's readiness."
   type        = bool
-  default     = true
+  default     = false
 }
 
 # ── AIG — EC2 ─────────────────────────────────────────────────────────────────

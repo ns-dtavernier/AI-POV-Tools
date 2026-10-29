@@ -7,6 +7,12 @@
 # back again before moving on. Every state change is reported to the SSM
 # parameter READY_PARAM, which the Terraform aig_ready gate polls.
 #
+# The AIG Config API rejects the DLP host while DLPoD is not responding, and the
+# AI Guardrails host while Guardrails is not responding. When the AIG boots before
+# them (the wait_for_* variables are false) its bootstrap completes but fails to
+# set those hosts, and the dlp and guardrails steps keep retrying until the
+# instances are healthy and the API accepts the settings.
+#
 #   prereqs      SSH key, lab root CA key and certificate, jq are present
 #   instance     the AIG EC2 instance (Name tag AIG_NAME) is running
 #   api          AIG public FQDN is known; SSH to the AIG and generate a 1 hour

@@ -132,7 +132,7 @@ The leaf cert and private key go only to DLPoD:
 13. AIG configures Guardrails at `ai_guardrails.host`
 14. AIG validates and configures DLPoD at `dlp.host` — see AIG Validation section
 
-**Dependency:** by default the AIG EC2 is created only after both `null_resource.guardrails_ready` and `null_resource.dlpod_ready` succeed — Guardrails and DLPoD must be serving before the AIG tries to validate them. `wait_for_guardrails_to_deploy_aig` and `wait_for_dlpod_to_deploy_aig` turn each wait off (the gate then has `count = 0` and the AIG waits only for that instance to be created). `wait_for_guardrails_to_deploy_dlpod` makes the DLPoD instance wait for Guardrails through `null_resource.guardrails_ready_for_dlpod`; it shares a script with `guardrails_ready`.
+**Dependency:** with `wait_for_guardrails_to_deploy_aig` and `wait_for_dlpod_to_deploy_aig` set to `true` (the default is `false`), the AIG EC2 is created only after both `null_resource.guardrails_ready` and `null_resource.dlpod_ready` succeed — Guardrails and DLPoD must be serving before the AIG tries to validate them. `wait_for_guardrails_to_deploy_aig` and `wait_for_dlpod_to_deploy_aig` turn each wait on or off (with `false` the gate has `count = 0` and the AIG waits only for that instance to be created). `wait_for_guardrails_to_deploy_dlpod` makes the DLPoD instance wait for Guardrails through `null_resource.guardrails_ready_for_dlpod`; it shares a script with `guardrails_ready`.
 
 ### Guardrails Bootstrap (Two-Phase)
 
@@ -242,6 +242,8 @@ The pipeline needs:
 ### Replacing Appliances
 
 Terraform `taint` (or `-replace` flag in Terraform >= 1.5) is the mechanism for forcing appliance replacement. See the troubleshooting guide for exact commands.
+
+The AIG Configuration API rejects the DLP host while DLPoD is not responding and the AI Guardrails host while Guardrails is not responding. With the gates off, the AIG's bootstrap therefore fails to set those hosts, and the bastion script retries until the instances are healthy (about 30 minutes after `terraform apply` starts with a pre-built Guardrails VM, versus about 5 minutes for the apply itself). With the gates on, apply takes about 30 minutes and everything is ready when it finishes.
 
 The readiness gates (`null_resource.guardrails_ready`, `null_resource.guardrails_ready_for_dlpod`, `null_resource.dlpod_ready`, `null_resource.aig_ready`) only re-run when their `triggers` change (the instance ID). Tainting only the AIG does not re-run the gates — it assumes Guardrails and DLPoD are still healthy.
 

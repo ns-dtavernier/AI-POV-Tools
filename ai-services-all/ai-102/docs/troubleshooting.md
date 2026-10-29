@@ -118,6 +118,18 @@ aws ssm get-parameter \
 
 A value left by an earlier instance cannot satisfy the gate, because the instance ID is part of the value. If the parameter still reads `Guardrails booting` long after the instance started, the instance is not reporting: check `/var/log/user-data.log` and `/var/log/guardrails-phase2.log` on it, and that the instance role still allows `ssm:PutParameter` on the parameter.
 
+### AIG came up but the DLP or Guardrails host is not set
+
+The AIG Configuration API rejects the DLP host while DLPoD is not responding, and the AI Guardrails host while Guardrails is not responding. If the AIG booted before them (the `wait_for_*` variables are `false`), its bootstrap completes but fails to set those hosts. This is expected and the bastion script fixes it: it keeps retrying until the instances are healthy. With a pre-built Guardrails VM that takes about 30 minutes after `terraform apply` starts.
+
+```bash
+aws ssm get-parameter --name "/YOUR_PREFIX/aig-ready" \
+  --region YOUR_REGION --query Parameter.Value --output text
+# passed: prereqs, instance, api, enrollment, certificate | waiting on: dlp | then: guardrails | last error: ...
+```
+
+If a step stays in `waiting on` after DLPoD and Guardrails are healthy, read `/var/log/aig-cert-setup.log` on the bastion for the API's error. With `enable_bastion = false` nothing retries, so set it back to `true`.
+
 ---
 
 ## DLPoD Issues

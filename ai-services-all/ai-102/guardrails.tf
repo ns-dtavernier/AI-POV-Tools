@@ -219,8 +219,10 @@ resource "aws_instance" "guardrails" {
 #   guardrails_ready_for_dlpod  the DLPoD instance waits for it
 #                               (var.wait_for_guardrails_to_deploy_dlpod)
 #
-# Waiting on the AIG matters because the AIG would otherwise try to validate the
-# Guardrails host before the container is running and end up "unlinked".
+# Waiting on the AIG avoids a failed host setting: the AIG Config API rejects the
+# Guardrails host while the service is not responding, so an AIG that boots first
+# completes its bootstrap but fails to set the host. The bastion script retries
+# until the service is healthy and sets it then.
 #
 # A gate with count = 0 polls nothing, but its dependent still waits for the
 # Guardrails instance to be created, because Terraform's dependencies are static.
