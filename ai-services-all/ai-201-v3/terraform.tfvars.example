@@ -1,0 +1,262 @@
+# Netskope AI Services — new VPC (AIG public + Guardrails private)
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to terraform.tfvars and fill in the values marked REQUIRED.
+# Required values: availability_zone, aig_ami_id, guardrails_llm_image_s3_bucket, netskope_onpremappliance_licensekey,
+#                  netskope credentials (env vars).
+# All other values have working defaults and may be left as-is for most POVs.
+#
+# Full documentation: README.md
+#
+# CREDENTIALS — set as environment variables, not in this file:
+#   export NETSKOPE_SERVER_URL="https://TENANT_NAME.goskope.com/api/v2"
+#   export NETSKOPE_API_KEY="nsapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_v1"
+#   export TF_VAR_netskope_onpremappliance_licensekey="XXXXXXXX-XXXXXXXX-XXXXXXXXX-XXXXXXX-XXXXXXXX-XXXXXX-XXXXXXXXXXXXXXXXXXXX-XXXXXXXX"
+
+# ── AIG — Netskope ────────────────────────────────────────────────────────────
+
+# Display name shown in the Netskope tenant (1-15 characters). This must be unique within the tenant.
+aig_netskope_name = "aig-01"
+
+# ── AWS ───────────────────────────────────────────────────────────────────────
+# Unique prefix for the names of all AWS resources (Name tags and name attributes): lowercase letters,
+# digits and hyphens, 1-20 characters. Produces e.g. <prefix>-vpc, <prefix>-aig, <prefix>-guardrails.
+aws_object_unique_prefix = "mylab-01"
+
+# AWS region to deploy all resources
+aws_region = "us-east-1"
+
+# Availability zone for all subnets. Must be valid for aws_region.
+# Check with: aws ec2 describe-availability-zones --region YOUR_REGION --query 'AvailabilityZones[*].ZoneName'
+availability_zone = "us-east-1a"
+
+# ── AWS — Tags ────────────────────────────────────────────────────────────────
+# Applied to every taggable AWS resource via the provider's default_tags.
+
+# REQUIRED: Email address of the person responsible for this deployment.
+aws_tag_owner = "user@example.com"
+
+# REQUIRED: One of: core, pov, demo, lab, integration
+aws_tag_purpose = "pov"
+
+# REQUIRED: Date after which this deployment may be torn down (YYYY-MM-DD).
+aws_tag_terminate_after = "2026-12-31"
+
+# OPTIONAL: Project name. Omit or leave empty to skip the 'project' tag.
+# Letters, numbers, spaces and _ . : / = + - @ only, up to 256 characters.
+# aws_tag_project = "netskope-pov"
+
+# OPTIONAL: Free-text description. Omit or leave empty to skip the 'description' tag.
+# Same character rules as aws_tag_project. CANNOT INCLUDE COMMAS.
+# aws_tag_description = "Fully automated deployment of AI Gateway + Guardrails GPU + DLPoD"
+
+# ── VPC / Networking ──────────────────────────────────────────────────────────
+# These CIDRs work for most POVs. Change them if they overlap with networks
+# you need to connect to this VPC (e.g. via VPC peering or Transit Gateway).
+
+vpc_cidr            = "10.0.0.0/16"
+public_subnet_cidr  = "10.0.1.0/24" # AIG instance (EIP) + NAT Gateway
+private_subnet_cidr = "10.0.2.0/24" # Guardrails GPU instance (no public IP)
+
+# CIDRs allowed to reach the AI Gateway on TCP port 443.
+# The default permits access from anywhere — restrict to your corporate egress
+# IP or VPN CIDR for a more production-like deployment.
+# Example with Netskope Shared Subnets
+# allowed_cidr_blocks = ["10.0.0.0/16", "163.116.128.0/17", "162.10.0.0/17", "8.36.116.0/24", "8.39.144.0/24", "31.186.239.0/24"]
+allowed_cidr_blocks = ["10.0.0.0/16"]
+
+# ── Netskope Tenant ───────────────────────────────────────────────────────────
+# PREFERRED: Use environment variables or a gitignored tfvars file
+# export NETSKOPE_SERVER_URL="https://TENANT_NAME.goskope.com/api/v2"
+# export NETSKOPE_API_KEY="nsapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_v1"
+# export TF_VAR_netskope_onpremappliance_licensekey="XXXXXXXX-XXXXXXXX-XXXXXXXXX-XXXXXXX-XXXXXXXX-XXXXXX-XXXXXXXXXXXXXXXXXXXX-XXXXXXXX"
+# If you set these here they will appear in the Terraform state file.
+#
+# Netskope Tenant APIv2 Base URL
+# netskope_server_url = "https://TENANT_NAME.goskope.com/api/v2"
+
+# RBAC Service Account API Token
+# netskope_api_key    = "nsapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_v1"
+
+# Netskope On-Prem Appliance License Key (single tenant key for all Netskope On-Prem Appliances)
+# netskope_onpremappliance_licensekey = "XXXXXXXX-XXXXXXXX-XXXXXXXXX-XXXXXXX-XXXXXXXX-XXXXXX-XXXXXXXXXXXXXXXXXXXX-XXXXXXXX"
+
+# ── SSH Keys ──────────────────────────────────────────────────────────────────
+# A new AWS key pair, <aws_object_unique_prefix>-keypair, is created from a private
+# key and is always used by the AIG. The private key is stored in Secrets Manager
+# and downloaded by the bastion so it can SSH to the AIG.
+
+# Local path to an existing unencrypted SSH private key (PEM or OpenSSH format).
+# Leave blank to generate a private key locally, written to my-private-key.pem in
+# this directory. A path that does not exist, or a file that is not a valid private
+# key, fails terraform plan. Keep the key out of version control (*.pem is gitignored).
+keypair_existing_private_key_local_path = ""
+
+# Existing AWS EC2 key pair to use for each instance below. Leave blank to use the
+# new <aws_object_unique_prefix>-keypair. A non-blank value must name a key pair that
+# already exists in aws_region (aws ec2 describe-key-pairs --region YOUR_REGION).
+bastion_key_pair_name    = ""
+guardrails_key_pair_name = ""
+dlpod_key_pair_name      = ""
+
+# ── AIG and DLPoD - Signing CA ────────────────────────────────────────────────
+# The CA is used to sign certificates for both the AIG and DLPoD. The DLPoD server
+# certificate is signed by Terraform in dlpod.tf. The CA certificate is also the
+# AIG's trust anchor for DLPoD (dlp.certificate). The bastion signs the CSR
+# generated by the AIG with this CA. The CA key and certificate are stored
+# in Secrets Manager and downloaded by the bastion to /home/ssm-user/ as
+# lab-root-ca-key.pem and lab-root-ca-cert.pem.
+
+# Local path to an existing CA signing private key (PEM) and its matching
+# certificate. When the key path is set no signing key is created, and the
+# certificate path is required. Leave both blank to generate a new root CA with
+# openssl: <aws_object_unique_prefix>-root-ca-key.pem and <aws_object_unique_prefix>-root-ca-cert.pem in this directory
+# (*.pem is gitignored), built from the ca_new_* values below.
+ca_existing_signing_key_local_path  = ""
+ca_existing_signing_cert_local_path = ""
+
+# New root CA settings (only used when ca_existing_signing_key_local_path is blank).
+# ca_new_subj is in openssl req -subj format; each ca_new_addext entry is one -addext value.
+ca_new_subj = "/C=US/ST=CA/L=SantaClara/O=NetskopeLab/OU=Security/CN=Netskope Lab Root CA/emailAddress=admin@lab.internal"
+ca_new_addext = [
+  "basicConstraints=critical,CA:TRUE",
+  "keyUsage=critical,keyCertSign,cRLSign",
+]
+ca_new_algorithm = "RSA" # only RSA is supported
+ca_new_rsa_bits  = 2048  # 2048, 3072 or 4096
+ca_new_days      = 365
+
+# ── AIG - Cert ────────────────────────────────────────────────────────────────
+# Subject and key settings for the certificate whose CSR the AIG generates (to be
+# signed by the signing CA above). The CN is not configurable: it is always the
+# AIG's AWS-generated public DNS name (output aig_fqdn). Optional fields may be
+# omitted or set to null.
+
+# OPTIONAL: Subject fields (O, OU, email, C, ST, L).
+aig_cert_organization      = "NetskopeLab" # max 256 chars
+aig_cert_organization_unit = "Security"    # max 256 chars
+aig_cert_email             = "admin@lab.internal"
+aig_cert_country           = "US" # exactly 2 alphabetic characters
+aig_cert_state             = "CA" # max 256 chars
+aig_cert_city              = "SantaClara" # max 256 chars
+
+# OPTIONAL: Private key. Algorithm is ecdsa, rsa or ed25519 (ecdsa P-256 when unset).
+aig_cert_key_algorithm = "ecdsa"
+aig_cert_key_size      = "2048" # RSA only: 2048, 3072 or 4096
+aig_cert_key_curve     = "P256" # ECDSA only: P256, P384 or P521
+
+# Certificate validity in days. Keep it shorter than the signing CA's validity
+# (ca_new_days) so the leaf does not outlive its CA.
+aig_cert_validity_period_days = 90
+
+# ── DLPoD - Cert ──────────────────────────────────────────────────────────────
+# Subject, key and validity of the DLPoD server certificate, signed by the signing
+# CA above and installed through the DLPoD bootstrap. The DNS SAN is always
+# dlpod_hostname and the IP SAN dlpod_private_ip. Optional fields may be omitted
+# or set to null.
+
+# OPTIONAL: Certificate CN (max 256 chars). Defaults to dlpod_hostname.
+# dlpod_cert_common_name = "dlp.aig.internal"
+
+# OPTIONAL: Subject fields (O, OU, C, ST, L).
+dlpod_cert_organization      = "NetskopeLab" # max 256 chars
+dlpod_cert_organization_unit = "Security"    # max 256 chars
+dlpod_cert_country           = "US"          # exactly 2 alphabetic characters
+dlpod_cert_state             = "CA"          # max 256 chars
+dlpod_cert_city              = "SantaClara"  # max 256 chars
+
+# Private key. Only RSA is supported; bits are 2048, 3072 or 4096.
+dlpod_cert_key_algorithm = "RSA"
+dlpod_cert_rsa_bits      = 2048
+
+# Certificate validity in days. Keep it shorter than the signing CA's validity
+# (ca_new_days) so the leaf does not outlive its CA.
+dlpod_cert_validity_period_days = 90
+
+# ── Bastion Host - EC2 ────────────────────────────────────────────────────────
+
+# Fixed private IP for the bastion. Must be within public_subnet_cidr.
+bastion_private_ip = "10.0.1.10"
+
+# ── AIG — EC2 ─────────────────────────────────────────────────────────────────
+
+# REQUIRED: AMI ID for the Netskope AI Gateway appliance in your target region.
+# Subscribe on AWS Marketplace; the AMI ID is displayed after accepting terms.
+# The value below is a placeholder — update it for your region.
+# AIG 1.9.63 (Oct 13, 2026) in us-east-1
+aig_ami_id = "ami-01ca21d57390e7682"
+
+# c6a.4xlarge (16 vCPU, 32 GB RAM) is the recommended minimum.
+aig_instance_type = "c6a.4xlarge"
+
+# Fixed private IP for the AIG. Must be within public_subnet_cidr.
+aig_private_ip = "10.0.1.20"
+
+# Secrets Manager secret that the AIG reads at first boot.
+# Must start with "aig/" to match the deployment IAM policy.
+# Defaults to "aig/<aws_object_unique_prefix>/bootstrap"; set only to override.
+# secret_name = "aig/prod/bootstrap"
+
+# ── Bastion and deployment ordering ───────────────────────────────────────────
+
+# The bastion signs and installs the AIG certificate, sets the AIG's DLP and
+# Guardrails hosts, and reports the AIG's readiness. Leave true until the AIG is
+# fully set up; then set false and apply to remove the bastion and its secrets.
+# The AIG, DLPoD and Guardrails keep working. Set true again to rebuild it.
+#enable_bastion = true
+
+# Which readiness gates Terraform waits for before creating the next component.
+# All default to false (no waiting); set true to wait.
+# DLPoD waits for Guardrails to be healthy (about 30 minutes) before it is created.
+#wait_for_guardrails_to_deploy_dlpod = false
+# The AIG waits for Guardrails to be healthy / DLPoD's HTTPS service to answer.
+#wait_for_guardrails_to_deploy_aig = false
+#wait_for_dlpod_to_deploy_aig      = false
+# terraform apply waits until the AIG is enrolled and configured (needs the bastion).
+#wait_for_aig_to_complete_template = false
+
+# ── Guardrails — EC2 ──────────────────────────────────────────────────────────
+
+# OPTIONAL: Custom Guardrails AMI (Ubuntu-based, with NVIDIA driver, NVIDIA
+# Container Toolkit, Docker and the LLM image pre-installed). Region-specific.
+# Out-of-date components are upgraded at first boot. Leave empty to use stock
+# Ubuntu 22.04 and install everything at first boot (1-2 hours).
+# volume_size_gb (next section) must be >= the AMI's root snapshot size.
+#guardrails_ami_id = ""   # This blank entry will force a fresh build
+guardrails_ami_id = "ami-02f6135056835019b"
+
+# g4dn.xlarge (1x NVIDIA T4, 4 vCPU, 16 GB RAM) is the minimum GPU instance.
+# Use g5.xlarge (1x NVIDIA A10G) for higher LLM throughput.
+guardrails_instance_type = "g4dn.xlarge"
+volume_size_gb           = 100
+
+# Fixed private IP for the Guardrails instance. Must be within private_subnet_cidr.
+# This address is embedded in the AIG bootstrap secret at plan time.
+# Do not change this value after running terraform apply.
+guardrails_private_ip = "10.0.2.10"
+
+# ── Guardrails — llm image ────────────────────────────────────────────────────
+# REQUIRED unless guardrails_ami_id is set to a custom AMI that already ships
+# the LLM image. If both are set, the bucket is only a fallback when the AMI
+# has no image. Otherwise, upload aisecurity-llm.tgz to this S3 bucket before
+# running terraform apply. The bucket must be in the same region as aws_region.
+#
+# aws s3 mb s3://my-guardrails-bucket --region us-east-1
+# aws s3 cp aisecurity-llm.tgz s3://my-guardrails-bucket/aisecurity-llm.tgz
+
+guardrails_llm_image_s3_bucket = "my-guardrails-bucket"
+guardrails_llm_image_s3_key    = "aisecurity-llm.tgz"
+
+# ── DLPoD - EC2 ───────────────────────────────────────────────────────────────
+
+# REQUIRED: AMI ID for the Netskope DLPoD appliance in your target region.
+# Obtain from Netskope — AMI IDs are region-specific.
+# The value below is for us-east-1 — update for other regions.
+# netskope-dlp-142.0.12 in us-east-1
+dlpod_ami_id = "ami-0dc05a852535f0ab4"
+
+# c5d.4xlarge (Intel NVMe, 16 vCPU / 32 GB) is recommended for faster nsbootstrap init.
+# c5ad.4xlarge (AMD NVMe) is equivalent but not available in us-west-1.
+dlpod_instance_type = "c5d.4xlarge"
+dlpod_private_ip    = "10.0.2.20"
+dlpod_persona       = "dlp-on-demand"
+dlpod_hostname      = "dlp.aig.internal"

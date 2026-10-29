@@ -30,6 +30,8 @@ AI-POV-Tools/
     curate.sh                    # Builds a customer package under dist/ (SE use only)
   ai-services-all/
     new-vpc-public/              # Full stack: AIG (public EIP) + Guardrails + DLPoD + bastion
+    ai-102-no-cert-setup/        # Full stack for a lab environment, without AIG or DLPoD certificate setup
+    ai-102/                      # Full stack for a lab environment, with AIG and DLPoD certificate setup
   aig/                           # AI Gateway
     CLAUDE.md
     deployment-role/             # Run once per AWS account: least-privilege deploy role

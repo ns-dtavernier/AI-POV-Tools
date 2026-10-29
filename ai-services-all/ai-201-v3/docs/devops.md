@@ -1,0 +1,257 @@
+# DevOps Reference
+
+## AWS Services Used
+
+### EC2
+
+| Instance | Type | Purpose |
+|----------|------|---------|
+| AIG | `c6a.4xlarge` (16 vCPU, 32 GB) | Netskope AI Gateway appliance — SSL termination, policy enforcement, AI routing |
+| Guardrails | `g4dn.xlarge` (NVIDIA T4 GPU) | LLM inference service — runs the Netskope AI security model in a Docker container |
+| DLPoD | `c5d.4xlarge` (16 vCPU, 32 GB, local NVMe) | DLP On-Demand appliance — AI-aware content inspection. Root volume provisioned at 9000 IOPS GP3 to speed up `nsbootstrap` initialisation (can be reduced to 3000 IOPS post-init). `c5ad.4xlarge` is the AMD equivalent but is not available in us-west-1. |
+| Bastion | `t3.small` | Troubleshooting host — delete post-POV |
+
+**Why separate instances:** Each component has distinct compute profiles. The AIG is network-bound (SSL offload, proxying). Guardrails requires GPU for model inference. DLPoD is CPU-bound for content scanning.
+
+### VPC & Networking
+
+| Resource | Why |
+|----------|-----|
+| Public subnet | AIG requires a routable EIP for client connections and Netskope tenant communication |
+| Private subnet | Guardrails and DLPoD are internal services — no public exposure needed or desired |
+| NAT Gateway | Allows private subnet instances to reach the internet (NVIDIA drivers, Docker Hub, Netskope licensing) without having public IPs |
+| Internet Gateway | Required for public subnet routing |
+| VPC Endpoints (Interface) | SSM, SSMMessages, EC2Messages, CloudWatch Logs — keep management traffic on the AWS backbone, avoids NAT Gateway charges and latency for control plane operations |
+| VPC Endpoint (Gateway) | S3 — free, keeps Guardrails image download (~10 GB) off the NAT Gateway entirely |
+| Route 53 Private Hosted Zone | Resolves `dlp.aig.internal` → DLPoD private IP within the VPC. Required because the AIG's Go TLS stack cannot verify certificates when connecting to a bare IP URL — it must connect by hostname |
+
+### IAM
+
+**AIG instance role:**
+- `secretsmanager:GetSecretValue` on the bootstrap secret — reads enrollment token and service config at first boot
+
+**Guardrails instance role:**
+- `AmazonSSMManagedInstanceCore` (AWS managed policy) — enables SSM Session Manager
+- `s3:GetObject` + `s3:ListBucket` on the image bucket/key — downloads `aisecurity-llm.tgz`
+- `ssm:PutParameter` on `/<prefix>/guardrails-ready` — writes readiness signal (the parameter itself is created and deleted by Terraform)
+- `logs:CreateLogStream` + `logs:PutLogEvents` + `logs:DescribeLogStreams` on the CloudWatch log group
+
+**DLPoD instance role:**
+- No permissions granted — DLPoD reads its bootstrap from EC2 user-data directly
+
+**Principle of least privilege:** Each role is scoped to the exact resources it needs. The AIG cannot read S3 or write SSM parameters. Guardrails cannot read Secrets Manager.
+
+### Secrets Manager
+
+The AIG bootstrap secret (`aig/<aws_object_unique_prefix>/bootstrap` by default) stores:
+
+```json
+{
+  "bootstrap": true,
+  "enrollment_token": "<single-use token>",
+  "ai_guardrails": {
+    "host": "http://10.0.2.10:8080/invocations"
+  },
+  "dlp": {
+    "certificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+    "host": "https://dlp.aig.internal"
+  }
+}
+```
+
+`recovery_window_in_days = 0` is set for POV convenience — in production this should be 7-30 days to enable recovery from accidental deletion.
+
+### CloudWatch Logs
+
+Log group `/<prefix>/guardrails` with 30-day retention captures Guardrails service logs. The Guardrails instance writes logs via the CloudWatch agent using the interface VPC endpoint (no internet path).
+
+### TLS (Terraform `tls` provider)
+
+DLPoD uses a root-and-leaf hierarchy (no intermediate CA). The root is the lab root CA from `ca.tf` — the same CA that signs the AIG certificate:
+
+```
+lab root CA (CA:TRUE; openssl-generated or supplied via ca_existing_signing_key_local_path)
+    └── tls_locally_signed_cert.dlpod (CA:FALSE, server_auth)
+            SANs: DNS:dlp.aig.internal, IP:10.0.2.20
+```
+
+**Why a separate leaf:** DLPoD rejects CA:TRUE certificates in the `dlpaas.server-cert` field. The leaf cert must be signed by the CA, not self-signed.
+
+**Where private keys live:** In Terraform state. Use S3 remote state with SSE-KMS encryption. See deployment guide for backend config.
+
+---
+
+## Bootstrap Process
+
+### AIG Bootstrap
+
+#### Certificate generation (Terraform apply — before any EC2 is created)
+
+The DLPoD server certificate is signed within Terraform by the lab root CA from `ca.tf` (generated locally with `openssl` unless `ca_existing_signing_key_local_path` is set). The CA certificate is the trust anchor the AIG uses to verify DLPoD.
+
+1. **`tls_private_key.dlpod`** — generates the RSA private key for the DLPoD server (`dlpod_cert_rsa_bits`, default 2048)
+2. **`tls_cert_request.dlpod`** — creates a CSR with:
+   - `CN = var.dlpod_cert_common_name` (default: `var.dlpod_hostname`, itself `dlp.aig.internal` by default)
+   - optional O, OU, C, ST, L from the `dlpod_cert_*` variables
+   - `DNS SAN = dlp.aig.internal` (var.dlpod_hostname)
+   - `IP SAN = 10.0.2.20` (var.dlpod_private_ip)
+3. **`tls_locally_signed_cert.dlpod`** — the lab root CA signs the CSR to produce the leaf server cert (`CA:FALSE`, `server_auth`) valid for `dlpod_cert_validity_period_days` (default 90)
+
+The CA cert PEM is then split across two consumers:
+- → `aws_secretsmanager_secret_version.aig_bootstrap` as `dlp.certificate` (AIG uses this to verify DLPoD's TLS)
+- → `local.dlpod_bootstrap.dlpaas.server-intermediate-ca-chain` (DLPoD sends this in the TLS handshake)
+
+The leaf cert and private key go only to DLPoD:
+- → `local.dlpod_bootstrap.dlpaas.server-cert` (leaf cert, `CA:FALSE`)
+- → `local.dlpod_bootstrap.dlpaas.server-key` (PKCS#8 private key)
+
+#### AIG provisioning sequence
+
+6. **`aws_eip.aig`** allocated — public IP is known before the instance exists
+7. **`netskope_aig_appliance.this`** created in the Netskope tenant using the EIP address
+8. **`netskope_aig_appliance_enrollment_token.this`** generates a single-use token (expires 24 hours)
+9. **`aws_secretsmanager_secret_version.aig_bootstrap`** writes to Secrets Manager:
+   ```json
+   {
+     "bootstrap": true,
+     "enrollment_token": "<single-use token>",
+     "ai_guardrails": { "host": "http://10.0.2.10:8080/invocations" },
+     "dlp": {
+       "certificate": "-----BEGIN CERTIFICATE-----\n<CA cert PEM>\n-----END CERTIFICATE-----\n",
+       "host": "https://dlp.aig.internal"
+     }
+   }
+   ```
+   Note: `dlp.certificate` is the **CA cert**, not the leaf cert. The AIG uses it as a trust anchor to verify the cert chain DLPoD presents. `dlp.host` uses the hostname (not bare IP) — see the AIG Validation section below.
+
+#### AIG first boot
+
+10. **EC2 user-data** contains only: `{ "bootstrap_secret": "aig/<aws_object_unique_prefix>/bootstrap" }`
+11. AIG calls `secretsmanager:GetSecretValue` using its IAM instance profile
+12. AIG uses `enrollment_token` to register with the Netskope tenant
+13. AIG configures Guardrails at `ai_guardrails.host`
+14. AIG validates and configures DLPoD at `dlp.host` — see AIG Validation section
+
+**Dependency:** with `wait_for_guardrails_to_deploy_aig` and `wait_for_dlpod_to_deploy_aig` set to `true` (the default is `false`), the AIG EC2 is created only after both `null_resource.guardrails_ready` and `null_resource.dlpod_ready` succeed — Guardrails and DLPoD must be serving before the AIG tries to validate them. `wait_for_guardrails_to_deploy_aig` and `wait_for_dlpod_to_deploy_aig` turn each wait on or off (with `false` the gate has `count = 0` and the AIG waits only for that instance to be created). `wait_for_guardrails_to_deploy_dlpod` makes the DLPoD instance wait for Guardrails through `null_resource.guardrails_ready_for_dlpod`; it shares a script with `guardrails_ready`.
+
+### Guardrails Bootstrap (Two-Phase)
+
+The instance uses `guardrails_ami_id` if set (a custom Ubuntu-based AMI with the NVIDIA driver, NVIDIA Container Toolkit, Docker and the LLM image pre-installed), otherwise stock Ubuntu 22.04. The userdata is idempotent: it checks each component, installs what is missing, upgrades what is present, and restarts the container only if something changed. The same script therefore works on either AMI; stock Ubuntu just takes the full install path.
+
+**Phase 1 — EC2 UserData (runs at first boot):**
+1. Install `curl`, `jq`, `ubuntu-drivers-common` (and `awscli` if no `aws` CLI exists); apply OS upgrades (Ubuntu 22.04 runs automatic package updates at first boot, so apt waits on the dpkg lock)
+2. Set the `/<prefix>/guardrails-ready` SSM parameter to `Guardrails just starting`
+3. Snapshot installed versions of the NVIDIA driver, NVIDIA Container Toolkit and Docker to `/var/lib/guardrails-setup/before.env`
+4. NVIDIA driver: if no apt driver package and `nvidia-smi` fails, run `ubuntu-drivers install`; if a driver package exists, `apt-get install --only-upgrade` it
+5. Write Phase 2 script to `/opt/guardrails-phase2.sh` and install/enable `guardrails-setup.service`
+6. Reboot **only if** the driver was installed/upgraded, `nvidia-smi` is not working, or `/var/run/reboot-required` exists; otherwise start Phase 2 immediately
+
+**Phase 2 — systemd service:**
+1. Wait for `nvidia-smi` (up to 2 min after a reboot); record whether the driver version changed
+2. NVIDIA Container Toolkit: add the apt repo if missing, then install/upgrade
+3. Docker: add the Docker CE repo if missing, then install/upgrade (if the AMI uses Ubuntu's `docker.io`, that package is upgraded instead)
+4. `nvidia-ctk runtime configure --runtime=docker`; restart the Docker daemon if its config changed or Docker was upgraded; verify GPU access with a test container
+5. LLM image: use a local image whose name contains `aisecurity`; download `aisecurity-llm.tgz` from S3 and `docker load` it **only if no local image exists**
+6. Container: if one exists for the image, set `--restart=unless-stopped` and `docker restart` it when the driver, toolkit, Docker, runtime config or image changed (otherwise `docker start`); if none exists, create `guardrails` on port 8080 with GPU access
+7. Poll `http://localhost:8080/ping` until `{"status":"Healthy"}`
+8. Write SSM Parameter `/<prefix>/guardrails-ready = healthy:<instance id>`
+
+Expect ~5–10 min with a current custom AMI and no reboot; up to ~30 min on stock Ubuntu (full install, image download from S3 and load).
+
+**Readiness gate:** `null_resource.guardrails_ready` first sets the parameter to `Guardrails booting`, then polls every 10 seconds (up to 90 minutes) until it equals `healthy:<this instance's id>`. `terraform apply` blocks here until then. Because the instance ID is part of the value, a value left by an earlier instance can never satisfy the gate. The parameter is a Terraform-managed `aws_ssm_parameter` (value changes are ignored), so it is deleted on destroy. **Observed total Phase 1 + Phase 2: ~30 minutes** on `g4dn.xlarge` in us-west-1.
+
+**Monitor progress:**
+```bash
+aws ssm start-session --target <instance-id> --region <region>
+sudo tail -f /var/log/user-data.log          # Phase 1
+sudo tail -f /var/log/guardrails-phase2.log  # Phase 2
+```
+
+### DLPoD Bootstrap
+
+DLPoD uses Netskope's `nsbootstrap.service` — a first-boot service that reads raw JSON from EC2 user-data and applies it. Terraform delivers the complete bootstrap config via `user_data = jsonencode(local.dlpod_bootstrap)`.
+
+**Bootstrap fields applied:**
+
+| Field | Content | Purpose |
+|-------|---------|---------|
+| `persona` | `dlp-on-demand` | Activates DLP inspection mode |
+| `dns.primary` | VPC DNS resolver (`vpc_cidr + 2`) | Ensures DLPoD uses VPC DNS to resolve internal names |
+| `system.licensekey` | Netskope license key | Activates the appliance |
+| `system.hostname` | `dlp.aig.internal` | Sets appliance hostname |
+| `system.ssh-allowlist` | Public subnet CIDR | Restricts SSH access to the public subnet only |
+| `dlpaas.server-cert` | Leaf TLS cert (CA:FALSE) | The HTTPS certificate DLPoD presents |
+| `dlpaas.server-key` | Leaf private key (PKCS#8) | Private key for the TLS cert |
+| `dlpaas.server-intermediate-ca-chain` | CA cert | Sent as the TLS chain |
+
+**IMDSv2:** The DLPoD instance enforces `http_tokens = "required"` with `http_put_response_hop_limit = 1`. This mitigates two attack classes:
+- **Redirect-based SSRF:** A web application tricked into following a redirect to `169.254.169.254` receives a 401 — IMDSv2 requires a PUT to obtain a session token before any GET, which redirect chains cannot satisfy.
+- **Container access:** The hop limit of 1 causes the PUT token request's TTL to be decremented at the container network boundary, preventing containerised processes from obtaining a metadata token at all.
+
+Note: IMDSv2 does not prevent processes running directly in the host network namespace from reading user-data — any host process that makes the PUT token request first can still access metadata. The protection is specifically against redirect-based SSRF and container escape paths.
+
+**Readiness gate:** `null_resource.dlpod_ready` uses `ssm:SendCommand` on the bastion to `curl -sk https://<dlpod_ip>/` and waits for a TCP/TLS response (any HTTP status). With `enable_bastion = false` the Guardrails instance is the probe instead (an extra rule, `dlpod_https_from_guardrails`, allows it to reach port 443). It uses the bastion as a proxy because DLPoD is in the private subnet and Terraform runs outside the VPC — direct connectivity is not available. The bastion is used (rather than Guardrails) so this gate does not depend on the Guardrails gate; the bastion's SSM agent can take a minute or two to register, and the loop retries until it does.
+
+---
+
+## AIG Validation of DLPoD
+
+When the AIG enrolls and processes its bootstrap secret, it validates the DLPoD connection as follows:
+
+1. **Parse** `dlp.host` from the bootstrap secret → `https://dlp.aig.internal`
+2. **Resolve** `dlp.aig.internal` via VPC DNS → Route 53 private zone → `10.0.2.20`
+3. **Connect** to `10.0.2.20:443` via TCP
+4. **TLS handshake:** AIG presents no client cert; DLPoD presents its server cert chain
+5. **Certificate verification:** AIG uses `dlp.certificate` (the CA cert PEM) as the trust anchor
+   - Verifies the server cert is signed by the CA
+   - Verifies the cert's DNS SAN includes `dlp.aig.internal` (the hostname from the URL)
+   - Verifies validity period
+6. **Probe request:** AIG sends a POST to `https://dlp.aig.internal/inspections/jobs`
+7. **Success:** DLPoD responds → AIG marks the DLP service as configured
+
+**Why the hostname matters:** The AIG is written in Go. Go's `crypto/tls` package verifies TLS certificates by extracting the host from the connection URL and checking it against the cert's SANs. When the host is a bare IP address (e.g. `https://10.0.2.20`), the AIG's URL parsing returns an empty hostname string for verification, causing the error:
+
+```
+x509: certificate is valid for dlp.aig.internal, not
+```
+
+This occurs even though the cert has a valid IP SAN (`IP Address:10.0.2.20`). Using `https://dlp.aig.internal` as the host causes Go to correctly verify against the DNS SAN, which succeeds.
+
+---
+
+## CI/CD Integration
+
+### State Management
+
+```hcl
+# backend.hcl — do not commit
+bucket         = "your-tfstate-bucket"
+key            = "ai-services/new-vpc-public/terraform.tfstate"
+region         = "us-west-1"
+encrypt        = true
+kms_key_id     = "arn:aws:kms:..."
+dynamodb_table = "terraform-state-lock"
+```
+
+### Pipeline Credentials
+
+The pipeline needs:
+- AWS credentials with EC2, VPC, IAM, Secrets Manager, SSM, Route53, CloudWatch permissions
+- `NETSKOPE_SERVER_URL` and `NETSKOPE_API_KEY` as pipeline secrets
+
+### Replacing Appliances
+
+Terraform `taint` (or `-replace` flag in Terraform >= 1.5) is the mechanism for forcing appliance replacement. See the troubleshooting guide for exact commands.
+
+The AIG Configuration API rejects the DLP host while DLPoD is not responding and the AI Guardrails host while Guardrails is not responding. With the gates off, the AIG's bootstrap therefore fails to set those hosts, and the bastion script retries until the instances are healthy (about 30 minutes after `terraform apply` starts with a pre-built Guardrails VM, versus about 5 minutes for the apply itself). With the gates on, apply takes about 30 minutes and everything is ready when it finishes.
+
+The readiness gates (`null_resource.guardrails_ready`, `null_resource.guardrails_ready_for_dlpod`, `null_resource.dlpod_ready`, `null_resource.aig_ready`) only re-run when their `triggers` change (the instance ID). Tainting only the AIG does not re-run the gates — it assumes Guardrails and DLPoD are still healthy.
+
+### Sensitive Values in State
+
+The Terraform state file contains:
+- DLPoD TLS private key (`tls_private_key.dlpod`) and the lab root CA private key (read from `<aws_object_unique_prefix>-root-ca-key.pem` or `ca_existing_signing_key_local_path`)
+- The AIG enrollment token
+- The DLPoD license key
+
+Protect the state file with S3 SSE-KMS and restrict state bucket access to the pipeline role only.
