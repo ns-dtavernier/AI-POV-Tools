@@ -119,7 +119,7 @@ variable "private_subnet_cidr" {
 variable "allowed_cidr_blocks" {
   description = "CIDR blocks permitted to reach the AI Gateway on TCP port 443 (HTTPS proxy)"
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = ["10.0.0.0/16"]
 }
 
 # ── Netskope Tenant ───────────────────────────────────────────────────────────

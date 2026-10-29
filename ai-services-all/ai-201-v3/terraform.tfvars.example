@@ -60,7 +60,9 @@ private_subnet_cidr = "10.0.2.0/24" # Guardrails GPU instance (no public IP)
 # CIDRs allowed to reach the AI Gateway on TCP port 443.
 # The default permits access from anywhere — restrict to your corporate egress
 # IP or VPN CIDR for a more production-like deployment.
-allowed_cidr_blocks = ["0.0.0.0/0"]
+# Example with Netskope Shared Subnets
+# allowed_cidr_blocks = ["10.0.0.0/16", "163.116.128.0/17", "162.10.0.0/17", "8.36.116.0/24", "8.39.144.0/24", "31.186.239.0/24"]
+allowed_cidr_blocks = ["10.0.0.0/16"]
 
 # ── Netskope Tenant ───────────────────────────────────────────────────────────
 # PREFERRED: Use environment variables or a gitignored tfvars file
