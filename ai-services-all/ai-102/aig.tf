@@ -14,6 +14,9 @@ locals {
   # AI Guardrails service host, set on the AIG by the bootstrap secret and
   # re-checked by the bastion's aig-cert-setup.sh (hostconfig API).
   guardrails_host = "http://${var.guardrails_private_ip}:8080/invocations"
+
+  # SSM parameter the bastion's aig-cert-setup.sh writes the AIG's readiness to
+  aig_ready_parameter = "/${var.aws_object_unique_prefix}/aig-ready"
 }
 
 # ── Netskope: register appliance + generate enrollment token ──────────────────
@@ -151,6 +154,9 @@ resource "aws_instance" "aig" {
 
   tags = { Name = local.aig_name }
 
+  # The two gates have count 0 unless wait_for_guardrails_to_deploy_aig and
+  # wait_for_dlpod_to_deploy_aig are true, so the AIG waits only for the
+  # components it is told to wait for.
   depends_on = [
     aws_secretsmanager_secret_version.aig_bootstrap,
     null_resource.guardrails_ready,
@@ -161,4 +167,89 @@ resource "aws_instance" "aig" {
 resource "aws_eip_association" "aig" {
   instance_id   = aws_instance.aig.id
   allocation_id = aws_eip.aig.id
+}
+
+# ── AIG readiness gate ────────────────────────────────────────────────────────
+#
+# The bastion's aig-cert-setup.service writes the AIG's progress to this
+# parameter (enrollment, certificate, DLP and AI Guardrails configuration) and
+# sets it to "healthy:<AIG instance id>" once every check has passed. Terraform
+# creates the parameter so it is deleted on destroy (the bastion is destroyed
+# first); the value belongs to the bastion, so Terraform ignores changes to it.
+#
+# The parameter exists only while the bastion does (var.enable_bastion). Disabling
+# the bastion deletes it and enabling it again creates it with the initial value,
+# so a "healthy" left from an earlier bastion can never satisfy the gate.
+
+resource "aws_ssm_parameter" "aig_ready" {
+  count = var.enable_bastion ? 1 : 0
+
+  name  = local.aig_ready_parameter
+  type  = "String"
+  value = "Waiting for the bastion to report"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Polls the parameter until it reads healthy for this AIG instance, so
+# terraform apply does not finish before the AIG is enrolled and configured.
+# Matching the instance ID means a value left by an earlier AIG can never satisfy
+# the gate, so it needs no stale-value cleanup. Stops early if the status starts
+# with "FAILED:". Re-runs when the AIG or bastion is replaced.
+#
+# Needs the bastion, which does the checks and writes the parameter, so it exists
+# only when enable_bastion and wait_for_aig_to_complete_template are both true.
+
+resource "null_resource" "aig_ready" {
+  count = var.enable_bastion && var.wait_for_aig_to_complete_template ? 1 : 0
+
+  triggers = {
+    aig_instance_id     = aws_instance.aig.id
+    bastion_instance_id = aws_instance.bastion[0].id
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOF
+      echo "Waiting for the AIG to be enrolled and configured (up to 60 minutes)..."
+      WANT="healthy:${aws_instance.aig.id}"
+      LAST=
+      n=0
+      while true; do
+        STATUS=$(aws ssm get-parameter \
+            --name "${local.aig_ready_parameter}" \
+            --region ${var.aws_region} \
+            --query "Parameter.Value" \
+            --output text 2>/dev/null || true)
+        [ "$STATUS" = "$WANT" ] && break
+        case "$STATUS" in
+          FAILED:*)
+            printf "%s %s\n" "$(date '+%H:%M:%S')" "$STATUS"
+            echo "ERROR: an AIG setup step failed permanently. See /var/log/aig-cert-setup.log on the bastion."
+            exit 1
+            ;;
+        esac
+        n=$((n + 1))
+        if [ $n -ge 360 ]; then
+          echo "ERROR: the AIG was not ready within 60 minutes."
+          exit 1
+        fi
+        [ -n "$STATUS" ] || STATUS="(aig-ready parameter not set yet)"
+        if [ "$STATUS" != "$LAST" ] || [ $((n % 6)) -eq 0 ]; then
+          printf "%s %s\n" "$(date '+%H:%M:%S')" "$STATUS"
+          LAST="$STATUS"
+        fi
+        sleep 10
+      done
+      echo "The AIG is enrolled and configured."
+    EOF
+  }
+
+  depends_on = [
+    aws_instance.aig,
+    aws_eip_association.aig,
+    aws_instance.bastion,
+    aws_ssm_parameter.aig_ready,
+  ]
 }

@@ -1,14 +1,25 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Troubleshooting bastion — public subnet, SSM Session Manager + SSH access.
+# Bastion — public subnet, SSM Session Manager + SSH access.
 #
-# DELETE THIS FILE when the POV is complete or when no longer needed.
-# Removing bastion.tf removes all resources below, including the SG rules
-# that allow bastion SSH → AIG, DLPoD, and Guardrails.
+# Controlled by var.enable_bastion (default true); every resource here has
+# count = var.enable_bastion ? 1 : 0. The bastion signs and installs the AIG
+# certificate, checks and sets the AIG's DLP and AI Guardrails hosts, and reports
+# the AIG's readiness to the aig-ready parameter (see aig.tf). It is also the SSM
+# probe for the DLPoD readiness gate (dlpod.tf) when it exists.
+#
+# Once the AIG is fully set up, set enable_bastion = false and apply to remove the
+# bastion, its IAM, its security group and rules, the aig-ready parameter and gate,
+# and the SSH private key and lab root CA key and certificate secrets
+# (ssh_keys.tf, ca.tf). The AIG keeps working:
+# its certificate and host settings live on the appliance. Set it back to true to
+# rebuild the bastion; it re-checks everything and changes only what differs.
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── IAM ───────────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   name = "${local.bastion_name}-role"
 
   assume_role_policy = jsonencode({
@@ -22,14 +33,18 @@ resource "aws_iam_role" "bastion" {
 }
 
 resource "aws_iam_role_policy_attachment" "bastion_ssm" {
-  role       = aws_iam_role.bastion.name
+  count = var.enable_bastion ? 1 : 0
+
+  role       = aws_iam_role.bastion[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 # Read the SSH private key (matches the AIG key pair) from Secrets Manager
 resource "aws_iam_role_policy" "bastion_read_ssh_key" {
+  count = var.enable_bastion ? 1 : 0
+
   name = "${local.bastion_name}-read-ssh-private-key"
-  role = aws_iam_role.bastion.id
+  role = aws_iam_role.bastion[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -37,15 +52,17 @@ resource "aws_iam_role_policy" "bastion_read_ssh_key" {
       Sid      = "ReadSSHPrivateKeySecret"
       Effect   = "Allow"
       Action   = "secretsmanager:GetSecretValue"
-      Resource = aws_secretsmanager_secret.ssh_private_key.arn
+      Resource = aws_secretsmanager_secret.ssh_private_key[0].arn
     }]
   })
 }
 
 # Read the lab root CA key and certificate (for signing the AIG CSR) from Secrets Manager
 resource "aws_iam_role_policy" "bastion_read_ca" {
+  count = var.enable_bastion ? 1 : 0
+
   name = "${local.bastion_name}-read-ca"
-  role = aws_iam_role.bastion.id
+  role = aws_iam_role.bastion[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -54,8 +71,8 @@ resource "aws_iam_role_policy" "bastion_read_ca" {
       Effect = "Allow"
       Action = "secretsmanager:GetSecretValue"
       Resource = [
-        aws_secretsmanager_secret.ca_key.arn,
-        aws_secretsmanager_secret.ca_cert.arn,
+        aws_secretsmanager_secret.ca_key[0].arn,
+        aws_secretsmanager_secret.ca_cert[0].arn,
       ]
     }]
   })
@@ -64,8 +81,10 @@ resource "aws_iam_role_policy" "bastion_read_ca" {
 # Let the AIG certificate setup script check that the AIG instance is running.
 # ec2:DescribeInstances does not support resource-level permissions.
 resource "aws_iam_role_policy" "bastion_describe_aig" {
+  count = var.enable_bastion ? 1 : 0
+
   name = "${local.bastion_name}-describe-instances"
-  role = aws_iam_role.bastion.id
+  role = aws_iam_role.bastion[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -78,14 +97,36 @@ resource "aws_iam_role_policy" "bastion_describe_aig" {
   })
 }
 
+# Let the AIG setup script report its progress to the aig-ready parameter.
+resource "aws_iam_role_policy" "bastion_report_aig_ready" {
+  count = var.enable_bastion ? 1 : 0
+
+  name = "${local.bastion_name}-report-aig-ready"
+  role = aws_iam_role.bastion[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "WriteAIGReadinessSignal"
+      Effect   = "Allow"
+      Action   = "ssm:PutParameter"
+      Resource = aws_ssm_parameter.aig_ready[0].arn
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   name = "${local.bastion_name}-instance-profile"
-  role = aws_iam_role.bastion.name
+  role = aws_iam_role.bastion[0].name
 }
 
 # ── Security Group ────────────────────────────────────────────────────────────
 
 resource "aws_security_group" "bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   name        = "${local.bastion_name}-sg"
   description = "Troubleshooting bastion - SSM access, full VPC egress"
   vpc_id      = aws_vpc.this.id
@@ -101,89 +142,105 @@ resource "aws_security_group" "bastion" {
   tags = { Name = "${local.bastion_name}-sg" }
 }
 
-# Allow bastion to reach DLPoD on port 443 (TLS cert check, curl)
+# Allow bastion to reach DLPoD on port 443 (readiness probe, TLS cert check, curl)
 resource "aws_security_group_rule" "dlpod_from_bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   type                     = "ingress"
   from_port                = 443
   to_port                  = 443
   protocol                 = "tcp"
   security_group_id        = aws_security_group.dlpod.id
-  source_security_group_id = aws_security_group.bastion.id
-  description              = "DLPoD HTTPS from bastion (troubleshooting)"
+  source_security_group_id = aws_security_group.bastion[0].id
+  description              = "DLPoD HTTPS from bastion (readiness probe, troubleshooting)"
 }
 
 # Allow bastion to SSH to DLPoD
 resource "aws_security_group_rule" "dlpod_ssh_from_bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   type                     = "ingress"
   from_port                = 22
   to_port                  = 22
   protocol                 = "tcp"
   security_group_id        = aws_security_group.dlpod.id
-  source_security_group_id = aws_security_group.bastion.id
+  source_security_group_id = aws_security_group.bastion[0].id
   description              = "DLPoD SSH from bastion (troubleshooting)"
 }
 
 # Allow DLPoD to SCP debug packages to the bastion
 resource "aws_security_group_rule" "bastion_ssh_from_dlpod" {
+  count = var.enable_bastion ? 1 : 0
+
   type                     = "ingress"
   from_port                = 22
   to_port                  = 22
   protocol                 = "tcp"
-  security_group_id        = aws_security_group.bastion.id
+  security_group_id        = aws_security_group.bastion[0].id
   source_security_group_id = aws_security_group.dlpod.id
   description              = "SSH from DLPoD (debug package SCP)"
 }
 
 # Allow bastion to reach Guardrails on port 8080 (health check, ping)
 resource "aws_security_group_rule" "guardrails_from_bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   type                     = "ingress"
   from_port                = 8080
   to_port                  = 8080
   protocol                 = "tcp"
   security_group_id        = aws_security_group.guardrails.id
-  source_security_group_id = aws_security_group.bastion.id
+  source_security_group_id = aws_security_group.bastion[0].id
   description              = "Guardrails health check from bastion (troubleshooting)"
 }
 
 # Allow bastion to SSH to Guardrails
 resource "aws_security_group_rule" "guardrails_ssh_from_bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   type                     = "ingress"
   from_port                = 22
   to_port                  = 22
   protocol                 = "tcp"
   security_group_id        = aws_security_group.guardrails.id
-  source_security_group_id = aws_security_group.bastion.id
+  source_security_group_id = aws_security_group.bastion[0].id
   description              = "Guardrails SSH from bastion (troubleshooting)"
 }
 
 # Allow bastion to SSH to AIG
 resource "aws_security_group_rule" "aig_ssh_from_bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   type                     = "ingress"
   from_port                = 22
   to_port                  = 22
   protocol                 = "tcp"
   security_group_id        = aws_security_group.aig.id
-  source_security_group_id = aws_security_group.bastion.id
+  source_security_group_id = aws_security_group.bastion[0].id
   description              = "AIG SSH from bastion (troubleshooting)"
 }
 
 # Allow bastion to reach AIG on port 8443 (configuration API)
 resource "aws_security_group_rule" "aig_config_api_from_bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   type                     = "ingress"
   from_port                = 8443
   to_port                  = 8443
   protocol                 = "tcp"
   security_group_id        = aws_security_group.aig.id
-  source_security_group_id = aws_security_group.bastion.id
+  source_security_group_id = aws_security_group.bastion[0].id
   description              = "AIG configuration API from bastion (certificate setup)"
 }
 
-# ── AIG certificate setup (runs on the bastion at every boot) ─────────────────
+# ── AIG setup and readiness (runs on the bastion continuously) ────────────────
 #
-# templates/aig-cert-setup.sh is installed as aig-cert-setup.service. It reads
-# its settings from /etc/aig-cert-setup.conf, written from the values below.
-# The AIG is found at runtime by its Name tag, so the bastion does not depend on
-# (or wait for) the AIG instance — only on its Elastic IP.
+# templates/aig-cert-setup.sh is installed as aig-cert-setup.service
+# (Restart=always). It reads its settings from /etc/aig-cert-setup.conf, written
+# from the values below, works through the AIG enrollment, certificate, DLP and
+# AI Guardrails checks (fixing what it can), and reports to the aig-ready SSM
+# parameter. The AIG is found at runtime by its Name tag, so the bastion does not
+# depend on (or wait for) the AIG instance — only on its Elastic IP.
 
 locals {
   aig_cert_key_algorithm_effective = coalesce(var.aig_cert_key_algorithm, "ecdsa")
@@ -212,12 +269,14 @@ locals {
 # ── EC2 Instance ──────────────────────────────────────────────────────────────
 
 resource "aws_instance" "bastion" {
+  count = var.enable_bastion ? 1 : 0
+
   ami                    = data.aws_ami.ubuntu_22_04.id
   instance_type          = "t3.small"
   subnet_id              = aws_subnet.public.id
   private_ip             = var.bastion_private_ip
-  iam_instance_profile   = aws_iam_instance_profile.bastion.name
-  vpc_security_group_ids = [aws_security_group.bastion.id]
+  iam_instance_profile   = aws_iam_instance_profile.bastion[0].name
+  vpc_security_group_ids = [aws_security_group.bastion[0].id]
 
   key_name                    = local.bastion_key_pair_name
   associate_public_ip_address = true
@@ -234,7 +293,9 @@ resource "aws_instance" "bastion" {
   # agent grants. The IAM role policies can take a few seconds to propagate, so
   # each download is retried.
   # Finally installs jq and the aig-cert-setup service (see the locals above).
-  user_data = <<-EOF
+  # Gzip-compressed to stay under EC2's 16 KB user-data limit; cloud-init
+  # decompresses gzip user-data automatically.
+  user_data_base64 = base64gzip(<<-EOF
     #!/bin/bash
     snap install amazon-ssm-agent --classic
     systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
@@ -267,27 +328,29 @@ resource "aws_instance" "bastion" {
     for U in ubuntu ssm-user; do
       D=/home/$U/.ssh
       install -d -m 700 -o $U -g $U $D
-      fetch_secret ${aws_secretsmanager_secret.ssh_private_key.name} "$D/${local.keypair_name}.pem" 600 $U
+      fetch_secret ${aws_secretsmanager_secret.ssh_private_key[0].name} "$D/${local.keypair_name}.pem" 600 $U
       printf 'Host *\n  IdentityFile %s\n' "$D/${local.keypair_name}.pem" > $D/config
       chown $U:$U $D/config
       chmod 600 $D/config
     done
 
-    fetch_secret ${aws_secretsmanager_secret.ca_key.name} /home/ssm-user/${local.ca_file_stem}-key.pem 600 ssm-user
-    fetch_secret ${aws_secretsmanager_secret.ca_cert.name} /home/ssm-user/${local.ca_file_stem}-cert.pem 644 ssm-user
+    fetch_secret ${aws_secretsmanager_secret.ca_key[0].name} /home/ssm-user/${local.ca_file_stem}-key.pem 600 ssm-user
+    fetch_secret ${aws_secretsmanager_secret.ca_cert[0].name} /home/ssm-user/${local.ca_file_stem}-cert.pem 644 ssm-user
 
     rm -f "$TMPFILE"
 
     DEBIAN_FRONTEND=noninteractive apt-get update -y
     DEBIAN_FRONTEND=noninteractive apt-get install -y jq
 
-    # AIG certificate setup: runs at every boot until it completes, then exits at once
+    # AIG setup and readiness reporter: runs continuously (see the locals above)
     cat > /etc/aig-cert-setup.conf <<'CONF'
     REGION=${var.aws_region}
     AIG_NAME=${local.aig_name}
     AIG_PRIVATE_IP=${var.aig_private_ip}
     AIG_FQDN=${local.aig_fqdn}
     GUARDRAILS_HOST=${local.guardrails_host}
+    DLPOD_HOST=https://${var.dlpod_hostname}
+    READY_PARAM=${local.aig_ready_parameter}
     SSH_KEY=/home/ssm-user/.ssh/${local.keypair_name}.pem
     CA_KEY=/home/ssm-user/${local.ca_file_stem}-key.pem
     CA_CERT=/home/ssm-user/${local.ca_file_stem}-cert.pem
@@ -303,13 +366,15 @@ resource "aws_instance" "bastion" {
 
     cat > /etc/systemd/system/aig-cert-setup.service <<'UNIT'
     [Unit]
-    Description=AIG certificate setup
+    Description=AIG setup and readiness reporter
     After=network-online.target
     Wants=network-online.target
 
     [Service]
     Type=simple
     ExecStart=/usr/local/bin/aig-cert-setup.sh
+    Restart=always
+    RestartSec=30
 
     [Install]
     WantedBy=multi-user.target
@@ -319,6 +384,7 @@ resource "aws_instance" "bastion" {
     systemctl enable aig-cert-setup.service
     systemctl start --no-block aig-cert-setup.service
   EOF
+  )
 
   user_data_replace_on_change = true
 
@@ -329,6 +395,7 @@ resource "aws_instance" "bastion" {
     aws_secretsmanager_secret_version.ca_key,
     aws_secretsmanager_secret_version.ca_cert,
     aws_iam_role_policy.bastion_describe_aig,
+    aws_iam_role_policy.bastion_report_aig_ready,
   ]
 
   metadata_options {
@@ -340,18 +407,19 @@ resource "aws_instance" "bastion" {
 }
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
+# Null when enable_bastion is false.
 
 output "bastion_instance_id" {
-  description = "Bastion instance ID — use with: aws ssm start-session --target <id> --region <region>"
-  value       = aws_instance.bastion.id
+  description = "Bastion instance ID — use with: aws ssm start-session --target <id> --region <region>. Null when enable_bastion is false."
+  value       = one(aws_instance.bastion[*].id)
 }
 
 output "bastion_private_ip" {
-  description = "Private IP of the bastion (public subnet)"
-  value       = aws_instance.bastion.private_ip
+  description = "Private IP of the bastion (public subnet). Null when enable_bastion is false."
+  value       = one(aws_instance.bastion[*].private_ip)
 }
 
 output "bastion_ssm_connect_command" {
-  description = "SSM connect command for the bastion"
-  value       = "aws ssm start-session --target ${aws_instance.bastion.id} --region ${var.aws_region}"
+  description = "SSM connect command for the bastion. Null when enable_bastion is false."
+  value       = var.enable_bastion ? "aws ssm start-session --target ${aws_instance.bastion[0].id} --region ${var.aws_region}" : null
 }

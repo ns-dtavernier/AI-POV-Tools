@@ -120,26 +120,37 @@ data "local_file" "ca_cert" {
 }
 
 # ── Secrets Manager: CA key and certificate for the bastion ───────────────────
-# The names start with "aig/" to match the deployment IAM policy.
+# The names start with "aig/" to match the deployment IAM policy. Only the bastion
+# reads these, so they exist only while var.enable_bastion is true; disabling the
+# bastion deletes them (immediately: recovery_window_in_days = 0). The CA files
+# on disk and in Terraform state are not affected.
 
 resource "aws_secretsmanager_secret" "ca_key" {
+  count = var.enable_bastion ? 1 : 0
+
   name                    = local.ca_key_secret_name
   description             = "Lab root CA signing key - downloaded by the bastion to sign the AIG CSR"
   recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "ca_key" {
-  secret_id     = aws_secretsmanager_secret.ca_key.id
+  count = var.enable_bastion ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.ca_key[0].id
   secret_string = data.local_sensitive_file.ca_key.content
 }
 
 resource "aws_secretsmanager_secret" "ca_cert" {
+  count = var.enable_bastion ? 1 : 0
+
   name                    = local.ca_cert_secret_name
   description             = "Lab root CA certificate - downloaded by the bastion to sign the AIG CSR"
   recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "ca_cert" {
-  secret_id     = aws_secretsmanager_secret.ca_cert.id
+  count = var.enable_bastion ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.ca_cert[0].id
   secret_string = data.local_file.ca_cert.content
 }

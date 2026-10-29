@@ -83,6 +83,23 @@ resource "aws_iam_role_policy" "s3_image_download" {
   })
 }
 
+# The readiness parameter is created by Terraform (so it is removed on destroy)
+# but its value belongs to the instance, which writes progress and finally
+# "healthy:<instance id>" to it; Terraform ignores changes to the value.
+locals {
+  guardrails_ready_parameter = "/${var.aws_object_unique_prefix}/guardrails-ready"
+}
+
+resource "aws_ssm_parameter" "guardrails_ready" {
+  name  = local.guardrails_ready_parameter
+  type  = "String"
+  value = "Guardrails not started"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 resource "aws_iam_role_policy" "guardrails_ready_signal" {
   name = "guardrails-ready-signal"
   role = aws_iam_role.guardrails.id
@@ -90,13 +107,10 @@ resource "aws_iam_role_policy" "guardrails_ready_signal" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid    = "WriteReadinessSignal"
-      Effect = "Allow"
-      Action = [
-        "ssm:PutParameter",
-        "ssm:DeleteParameter",
-      ]
-      Resource = "arn:aws:ssm:${data.aws_region.current.name}:*:parameter/${local.guardrails_name}/guardrails-ready"
+      Sid      = "WriteReadinessSignal"
+      Effect   = "Allow"
+      Action   = "ssm:PutParameter"
+      Resource = aws_ssm_parameter.guardrails_ready.arn
     }]
   })
 }
@@ -128,7 +142,7 @@ resource "aws_iam_instance_profile" "guardrails" {
 # ── Guardrails — CloudWatch Log Group ────────────────────────────────────────
 
 resource "aws_cloudwatch_log_group" "guardrails" {
-  name              = "/${local.guardrails_name}/guardrails"
+  name              = "/${var.aws_object_unique_prefix}/guardrails"
   retention_in_days = 30
 }
 
@@ -179,81 +193,111 @@ resource "aws_instance" "guardrails" {
     aws_region                     = data.aws_region.current.name
     guardrails_llm_image_s3_bucket = var.guardrails_llm_image_s3_bucket
     guardrails_llm_image_s3_key    = var.guardrails_llm_image_s3_key
-    guardrails_name                = local.guardrails_name
+    guardrails_ready_parameter     = local.guardrails_ready_parameter
   }))
 
   user_data_replace_on_change = false
 
   tags = { Name = local.guardrails_name }
 
-  depends_on = [aws_nat_gateway.this]
+  depends_on = [
+    aws_nat_gateway.this,
+    aws_ssm_parameter.guardrails_ready,
+    aws_iam_role_policy.guardrails_ready_signal,
+  ]
 }
 
-# ── Guardrails readiness gate ─────────────────────────────────────────────────
+# ── Guardrails readiness gates ────────────────────────────────────────────────
 #
-# The Guardrails two-phase setup takes 15-30 minutes. This null_resource polls
+# The Guardrails two-phase setup takes 15-30 minutes. These null_resources poll
 # an SSM Parameter that the Guardrails userdata script writes once the /ping
-# endpoint returns Healthy. The AIG instance depends on this resource so it is
-# not created until the Guardrails service is actually ready — preventing the
-# "unlinked" state that results when the AIG tries to validate the host before
-# the container is running.
+# endpoint returns Healthy. Two gates share one script so each consumer can wait
+# (or not) independently:
 #
-# The trigger on instance ID ensures this re-runs if Guardrails is replaced.
+#   guardrails_ready            the AIG instance waits for it
+#                               (var.wait_for_guardrails_to_deploy_aig)
+#   guardrails_ready_for_dlpod  the DLPoD instance waits for it
+#                               (var.wait_for_guardrails_to_deploy_dlpod)
+#
+# Waiting on the AIG matters because the AIG would otherwise try to validate the
+# Guardrails host before the container is running and end up "unlinked".
+#
+# A gate with count = 0 polls nothing, but its dependent still waits for the
+# Guardrails instance to be created, because Terraform's dependencies are static.
+#
+# The final value is "healthy:<instance id>", so a gate passes only for this
+# instance; a value left by an earlier instance can never satisfy it. Each gate
+# resets the parameter to "Guardrails booting" before polling, unless it already
+# reads healthy for this instance (so enabling a gate on a running deployment
+# does not erase the signal). The parameter is managed by
+# aws_ssm_parameter.guardrails_ready, so it is removed on destroy.
 
-resource "null_resource" "guardrails_ready" {
-  triggers = {
-    instance_id = aws_instance.guardrails.id
-    # Stored in triggers so the destroy-time provisioner can read them via
-    # self (destroy provisioners cannot reference other resources or variables).
-    parameter_name = "/${local.guardrails_name}/guardrails-ready"
-    region         = var.aws_region
-  }
-
-  # The readiness parameter is created by the instance at runtime, not by
-  # Terraform, so remove it on destroy to avoid leaving it behind.
-  provisioner "local-exec" {
-    when    = destroy
-    command = <<-EOF
-      aws ssm delete-parameter \
-          --name "${self.triggers.parameter_name}" \
-          --region ${self.triggers.region} 2>/dev/null || true
-    EOF
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOF
-      #echo "Purging stale readiness parameter from any previous deployment..."
-      #aws ssm delete-parameter \
-      #    --name "/${local.guardrails_name}/guardrails-ready" \
-      #    --region ${var.aws_region} 2>/dev/null || true
-
+locals {
+  guardrails_ready_script = <<-EOF
+    CUR=$(aws ssm get-parameter \
+        --name "${aws_ssm_parameter.guardrails_ready.name}" \
+        --region ${var.aws_region} \
+        --query "Parameter.Value" \
+        --output text 2>/dev/null || true)
+    WANT="healthy:${aws_instance.guardrails.id}"
+    if [ "$CUR" != "$WANT" ]; then
       aws ssm put-parameter \
-        --name "/${local.guardrails_name}/guardrails-ready" \
+        --name "${aws_ssm_parameter.guardrails_ready.name}" \
         --value "Guardrails booting" \
         --type String \
         --overwrite \
         --region ${var.aws_region}
+    fi
 
-      echo "Waiting for Guardrails service to become healthy (up to 90 minutes)..."
-      n=0
-      while true; do
-        STATUS=$(aws ssm get-parameter \
-            --name "/${local.guardrails_name}/guardrails-ready" \
-            --region ${var.aws_region} \
-            --query "Parameter.Value" \
-            --output text 2>/dev/null || true)
-        [ "$STATUS" = "healthy" ] && break
-        n=$((n + 1))
-        if [ $n -ge 540 ]; then
-          echo "ERROR: Guardrails did not become healthy within 90 minutes."
-          exit 1
-        fi
-        [ -n "$STATUS" ] || STATUS="(guardrails-ready parameter not set yet)"
-        printf "%s %s\n" "$(date '+%H:%M:%S')" "$STATUS"
-        sleep 10
-      done
-      echo "Guardrails is healthy. Creating AIG instance."
-    EOF
+    echo "Waiting for Guardrails service to become healthy (up to 90 minutes)..."
+    n=0
+    while true; do
+      STATUS=$(aws ssm get-parameter \
+          --name "${aws_ssm_parameter.guardrails_ready.name}" \
+          --region ${var.aws_region} \
+          --query "Parameter.Value" \
+          --output text 2>/dev/null || true)
+      [ "$STATUS" = "$WANT" ] && break
+      n=$((n + 1))
+      if [ $n -ge 540 ]; then
+        echo "ERROR: Guardrails did not become healthy within 90 minutes."
+        exit 1
+      fi
+      [ -n "$STATUS" ] || STATUS="(guardrails-ready parameter not set yet)"
+      printf "%s %s\n" "$(date '+%H:%M:%S')" "$STATUS"
+      sleep 10
+    done
+    echo "Guardrails is healthy."
+  EOF
+}
+
+resource "null_resource" "guardrails_ready" {
+  count = var.wait_for_guardrails_to_deploy_aig ? 1 : 0
+
+  triggers = {
+    instance_id    = aws_instance.guardrails.id
+    parameter_name = aws_ssm_parameter.guardrails_ready.name
+    region         = var.aws_region
+  }
+
+  provisioner "local-exec" {
+    command = local.guardrails_ready_script
+  }
+
+  depends_on = [aws_instance.guardrails]
+}
+
+resource "null_resource" "guardrails_ready_for_dlpod" {
+  count = var.wait_for_guardrails_to_deploy_dlpod ? 1 : 0
+
+  triggers = {
+    instance_id    = aws_instance.guardrails.id
+    parameter_name = aws_ssm_parameter.guardrails_ready.name
+    region         = var.aws_region
+  }
+
+  provisioner "local-exec" {
+    command = local.guardrails_ready_script
   }
 
   depends_on = [aws_instance.guardrails]

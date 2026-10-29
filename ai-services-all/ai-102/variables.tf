@@ -14,13 +14,18 @@ variable "aig_netskope_name" {
 # ── AWS ───────────────────────────────────────────────────────────────────────
 
 variable "aws_object_unique_prefix" {
-  description = "Unique prefix for the names of all AWS resources (Name tags and name attributes). Lowercase letters, digits and hyphens, 1-20 characters."
+  description = "Unique prefix for the names of all AWS resources (Name tags and name attributes). Lowercase letters, digits and hyphens, 1-20 characters. Must not start with \"aws\" or \"ssm\": SSM parameter names cannot, and the prefix is used in them."
   type        = string
   default     = "mylab-01"
 
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9-]{0,19}$", var.aws_object_unique_prefix))
     error_message = "aws_object_unique_prefix must be 1-20 characters: lowercase letters, digits and hyphens, starting with a letter or digit."
+  }
+
+  validation {
+    condition     = !can(regex("^(aws|ssm)", lower(var.aws_object_unique_prefix)))
+    error_message = "aws_object_unique_prefix must not start with \"aws\" or \"ssm\" (case-insensitive): SSM Parameter Store reserves those prefixes and the readiness parameters are named after it."
   }
 }
 
@@ -486,6 +491,42 @@ variable "bastion_private_ip" {
     condition     = can(cidrhost(format("%s/32", var.bastion_private_ip), 0))
     error_message = "Must be a valid IPv4 address."
   }
+}
+
+variable "enable_bastion" {
+  description = "Create the bastion and everything that exists only for it: its IAM, security group and rules, the aig-ready parameter and gate, and the SSH private key and lab root CA key and certificate secrets in Secrets Manager. The bastion signs and installs the AIG certificate, sets the AIG's DLP and AI Guardrails hosts, and reports the AIG's readiness, so leave this true until the AIG is fully set up. Set it to false afterwards and apply to remove the bastion; the AIG, DLPoD and Guardrails keep working. Set it to true again to rebuild the bastion, which re-checks everything and changes only what differs. If the AIG is replaced while the bastion is disabled, enable it again so the new AIG gets its certificate and host settings."
+  type        = bool
+  default     = true
+}
+
+# ── Deployment ordering ───────────────────────────────────────────────────────
+# Each wait_for_* variable controls whether Terraform waits for a readiness gate
+# before creating the next component. With false the gate polls nothing, but the
+# dependent resource is still created only after the instance it would have
+# waited for exists (about 2 minutes), because Terraform's dependencies are static.
+
+variable "wait_for_guardrails_to_deploy_dlpod" {
+  description = "true: the DLPoD instance is not created until Guardrails reports healthy (about 30 minutes). false: DLPoD is created as soon as the Guardrails instance exists."
+  type        = bool
+  default     = false
+}
+
+variable "wait_for_guardrails_to_deploy_aig" {
+  description = "true: the AIG instance is not created until Guardrails reports healthy. false: the AIG is created as soon as the Guardrails instance exists (the AIG may then link to Guardrails before the service is running)."
+  type        = bool
+  default     = true
+}
+
+variable "wait_for_dlpod_to_deploy_aig" {
+  description = "true: the AIG instance is not created until the DLPoD HTTPS service answers on port 443 (probed from the bastion, or from the Guardrails instance when enable_bastion is false). false: the AIG is created as soon as the DLPoD instance exists."
+  type        = bool
+  default     = true
+}
+
+variable "wait_for_aig_to_complete_template" {
+  description = "true: terraform apply does not finish until the aig-ready parameter reads healthy for this AIG (enrolled, certificate Active, DLP and Guardrails hosts set). false: apply finishes once the AIG is created. Has no effect when enable_bastion is false, because the bastion reports the AIG's readiness."
+  type        = bool
+  default     = true
 }
 
 # ── AIG — EC2 ─────────────────────────────────────────────────────────────────

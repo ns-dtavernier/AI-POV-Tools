@@ -138,14 +138,6 @@ resource "aws_security_group" "dlpod" {
     security_groups = [aws_security_group.aig.id]
   }
 
-  ingress {
-    description     = "DLPoD readiness probe from Guardrails"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [aws_security_group.guardrails.id]
-  }
-
   egress {
     description = "All outbound - Netskope cloud, licensing, package updates"
     from_port   = 0
@@ -192,21 +184,47 @@ resource "aws_instance" "dlpod" {
 
   tags = { Name = local.dlpod_name }
 
-  depends_on = [aws_nat_gateway.this]
+  # guardrails_ready_for_dlpod has count 0 unless wait_for_guardrails_to_deploy_dlpod.
+  depends_on = [
+    aws_nat_gateway.this,
+    null_resource.guardrails_ready_for_dlpod,
+  ]
 }
 
 # ── DLPoD readiness gate ───────────────────────────────────────────────────────
 #
 # DLPoD bootstrap (nsbootstrap.service) applies the dlpaas cert and starts the
 # HTTPS service on port 443. This takes several minutes after the instance
-# launches. This null_resource uses SSM Send Command on the Guardrails instance
-# (same VPC, SSM-accessible) to curl DLPoD port 443 and block AIG creation
-# until the TLS service is actually accepting connections.
+# launches. This null_resource uses SSM Send Command on a probe instance in the
+# same VPC to curl DLPoD port 443 and block AIG creation until the TLS service is
+# actually accepting connections. Enabled by var.wait_for_dlpod_to_deploy_aig;
+# with false the AIG waits only for the DLPoD instance to be created.
 #
-# Depends on guardrails_ready so the Guardrails SSM agent is confirmed active
-# before we try to use it as a proxy for the connectivity check.
+# The probe is the bastion when enable_bastion is true (port 443 is allowed by
+# aws_security_group_rule.dlpod_from_bastion), otherwise the Guardrails instance
+# (allowed by dlpod_https_from_guardrails). Its SSM agent can take a minute or two
+# to register after boot; the send-command loop below retries until it does.
+
+locals {
+  dlpod_probe_instance_id = coalesce(one(aws_instance.bastion[*].id), aws_instance.guardrails.id)
+}
+
+# DLPoD HTTPS from Guardrails, for the readiness probe when there is no bastion
+resource "aws_security_group_rule" "dlpod_https_from_guardrails" {
+  count = !var.enable_bastion && var.wait_for_dlpod_to_deploy_aig ? 1 : 0
+
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.dlpod.id
+  source_security_group_id = aws_security_group.guardrails.id
+  description              = "DLPoD readiness probe from Guardrails (no bastion)"
+}
 
 resource "null_resource" "dlpod_ready" {
+  count = var.wait_for_dlpod_to_deploy_aig ? 1 : 0
+
   triggers = {
     instance_id = aws_instance.dlpod.id
   }
@@ -214,14 +232,14 @@ resource "null_resource" "dlpod_ready" {
   provisioner "local-exec" {
     command = <<-EOF
       echo "Waiting for DLPoD HTTPS service to become ready (up to 20 minutes)..."
-      GUARDRAILS="${aws_instance.guardrails.id}"
+      PROBE="${local.dlpod_probe_instance_id}"
       DLPOD_IP="${aws_instance.dlpod.private_ip}"
       REGION="${var.aws_region}"
       n=0
       until
         CMDID=$(aws ssm send-command \
           --region "$REGION" \
-          --instance-ids "$GUARDRAILS" \
+          --instance-ids "$PROBE" \
           --document-name "AWS-RunShellScript" \
           --parameters "commands=[\"curl -sk --max-time 5 https://$DLPOD_IP/ -o /dev/null && echo PORT_OPEN || echo PORT_CLOSED\"]" \
           --query "Command.CommandId" \
@@ -230,7 +248,7 @@ resource "null_resource" "dlpod_ready" {
         aws ssm get-command-invocation \
           --region "$REGION" \
           --command-id "$CMDID" \
-          --instance-id "$GUARDRAILS" \
+          --instance-id "$PROBE" \
           --query "StandardOutputContent" \
           --output text 2>/dev/null | grep -q "PORT_OPEN"
       do
@@ -239,15 +257,17 @@ resource "null_resource" "dlpod_ready" {
           echo "ERROR: DLPoD HTTPS service did not become ready within 20 minutes."
           exit 1
         fi
-        printf "  still waiting... %s\n" "$(date '+%H:%M:%S')"
+        printf "%s %s\n" "$(date '+%H:%M:%S')" "DLPoD HTTPS service not ready yet"
         sleep 22
       done
-      echo "DLPoD HTTPS service is ready. Creating AIG instance."
+      echo "DLPoD HTTPS service is ready."
     EOF
   }
 
   depends_on = [
-    null_resource.guardrails_ready,
+    aws_instance.bastion,
+    aws_instance.guardrails,
+    aws_security_group_rule.dlpod_https_from_guardrails,
     aws_instance.dlpod,
   ]
 }

@@ -59,7 +59,7 @@ Internet
 | AI Gateway | Public | SSL termination, policy enforcement, routes AI traffic to Guardrails and DLP traffic to DLPoD |
 | AI Guardrails | Private | GPU-backed LLM inference — scans AI prompts and responses against Netskope policies |
 | DLP On-Demand | Private | AI-aware DLP inspection — detects sensitive data in AI queries and responses |
-| Bastion | Public | Troubleshooting access — **delete `bastion.tf` post-POV** |
+| Bastion | Public | AIG certificate and host setup, AIG readiness reporting, DLPoD readiness probe, troubleshooting access. Optional after setup: `enable_bastion = false` removes it (see [Removing the bastion](#removing-the-bastion)) |
 
 ### AWS resources created
 
@@ -70,7 +70,7 @@ Internet
 | **Security groups** | One per instance with least-privilege ingress/egress rules |
 | **IAM** | Instance roles and profiles for AIG and Guardrails; DLPoD reads config from user-data only |
 | **Secrets Manager** | AIG bootstrap secret (enrollment token + Guardrails host + DLPoD TLS config) |
-| **SSM Parameter Store** | Guardrails readiness signal (`/<prefix>/guardrails-ready`) |
+| **SSM Parameter Store** | Guardrails readiness signal (`/<prefix>/guardrails-ready`) and AIG readiness signal (`/<prefix>/aig-ready`) |
 | **CloudWatch Logs** | Guardrails service log group (30-day retention) |
 | **VPC Endpoints** | Interface: SSM, SSMMessages, EC2Messages, CloudWatch Logs. Gateway: S3 |
 | **Route 53** | Private hosted zone resolving `dlp.aig.internal` → DLPoD private IP |
@@ -80,7 +80,7 @@ Internet
 
 ## How long does deployment take?
 
-`terraform apply` blocks at two readiness gates before creating the AIG. Observed timings on `g4dn.xlarge` in us-west-1:
+`terraform apply` blocks at two readiness gates before creating the AIG and a third after it. Observed timings on `g4dn.xlarge` in us-west-1:
 
 | Stage | Duration | What's happening |
 |-------|----------|-----------------|
@@ -89,6 +89,7 @@ Internet
 | Guardrails Phase 2 | ~3–20 min | NVIDIA container toolkit and Docker check/install/upgrade, LLM image (S3 download + `docker load` only if not already on the AMI), container start/restart, health check |
 | DLPoD bootstrap | ~5–10 min | `nsbootstrap` applies TLS certs and license key, `nssetupdlpaas` installs DLP pod |
 | AIG creation | ~2–3 min | Enrollment token written to Secrets Manager, AIG EC2 boots and self-enrolls with Netskope tenant |
+| AIG readiness | ~3–10 min (estimate, not yet measured) | The bastion confirms enrollment, installs the certificate, and confirms the DLP and Guardrails host settings (`aig_ready` gate) |
 | **Total** | **~35–50 min** | |
 
 ---
@@ -158,6 +159,11 @@ terraform apply
 | `netskope_server_url` | Netskope tenant API URL. Recommended: set via `NETSKOPE_SERVER_URL` env var (see [Environment variables](#environment-variables)). | `"https://tenant.goskope.com"` |
 | `netskope_api_key` | Netskope REST API v2 token (sensitive). Recommended: set via `NETSKOPE_API_KEY` env var. | — |
 | `bastion_private_ip` | Fixed private IP for the bastion — must be within `public_subnet_cidr` | `"10.0.1.11"` |
+| `enable_bastion` | Create the bastion and everything that exists only for it. `true` by default; see [Removing the bastion](#removing-the-bastion). | `true` |
+| `wait_for_guardrails_to_deploy_dlpod` | Wait for Guardrails to be healthy before creating DLPoD. See [Deployment ordering](#deployment-ordering). | `false` |
+| `wait_for_guardrails_to_deploy_aig` | Wait for Guardrails to be healthy before creating the AIG | `true` |
+| `wait_for_dlpod_to_deploy_aig` | Wait for DLPoD's HTTPS service before creating the AIG | `true` |
+| `wait_for_aig_to_complete_template` | Wait for `aig-ready` to be healthy before `terraform apply` finishes | `true` |
 
 ### SSH keys
 
@@ -223,7 +229,7 @@ Subject, key and validity of the DLPoD server certificate, signed by the signing
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `aws_object_unique_prefix` | `"netskope"` | Unique prefix for the names of all AWS resources (Name tags and name attributes). Lowercase letters, digits and hyphens, 1-20 characters. |
+| `aws_object_unique_prefix` | `"netskope"` | Unique prefix for the names of all AWS resources (Name tags and name attributes). Lowercase letters, digits and hyphens, 1-20 characters. Must not start with `aws` or `ssm` (reserved by SSM Parameter Store, and the prefix is used in the readiness parameter names). |
 | `aws_region` | `"us-east-1"` | AWS region to deploy all resources |
 | `vpc_cidr` | `"10.0.0.0/16"` | CIDR for the new VPC |
 | `public_subnet_cidr` | `"10.0.1.0/24"` | Public subnet — hosts the AIG (EIP) and NAT Gateway |
@@ -270,20 +276,65 @@ Subject, key and validity of the DLPoD server certificate, signed by the signing
 
 ---
 
-## AIG certificate setup (bastion)
+## AIG setup and readiness (bastion)
 
-The bastion runs `aig-cert-setup.service` at every boot (script: [templates/aig-cert-setup.sh](templates/aig-cert-setup.sh), installed to `/usr/local/bin/aig-cert-setup.sh`; settings in `/etc/aig-cert-setup.conf`). It works through these checks and, if any step fails, waits 1 minute and restarts them all:
+The bastion runs `aig-cert-setup.service` continuously (`Restart=always`; script: [templates/aig-cert-setup.sh](templates/aig-cert-setup.sh), installed to `/usr/local/bin/aig-cert-setup.sh`; settings in `/etc/aig-cert-setup.conf`). It never exits on its own. Each step below is retried every 60 seconds until it reads back positive; where a setting is wrong it is fixed through the AIG Configuration API and read back before moving on.
 
-1. Exit 0 if `/etc/aig-cert-setup-complete` exists.
-2. The AIG EC2 instance (found by its `Name` tag) is running. The bastion role has `ec2:DescribeInstances` for this.
-3. The AIG public FQDN (the `aig_fqdn` output, the Elastic IP's AWS-generated DNS name) becomes the certificate CN.
-4. SSH to `nsadmin@<aig_private_ip>` and run `enable-api --ttl 1h` to get an AIG Config API token.
-5. `GET https://<aig_private_ip>:8443/v1/config/bootstrap` reports `status` = `completed`.
-6. `GET /v1/config/certificate/status`. If the AIG has no certificate (`resource not found: failed to get certificate status`), `POST /v1/config/certificate/csr` with the `aig_cert_*` fields, save the CSR as `/home/ssm-user/aig-cert-request.csr`, sign it with the lab root CA (`subjectAltName = DNS:<fqdn>`, `extendedKeyUsage = serverAuth`) into `/home/ssm-user/aig-cert-signed.pem`, and `POST /v1/config/certificate/install`. A certificate that is already `Active` is left alone.
-7. `GET /v1/config/certificate/status` reports `Active`.
-8. `GET /v1/config/ai-guardrails`. The bootstrap secret's `ai_guardrails` block is applied once after enrollment and a failure is silent, so if `host_config.host_url` is missing or differs from the `guardrails_host_url` output, the script sets it with `PUT /v1/config/ai-guardrails/hostconfig` (`{"host_url": ...}`, HTTP 204) and reads it back to confirm. The script then writes `/etc/aig-cert-setup-complete`.
+| Step | Passes when |
+|------|-------------|
+| `prereqs` | The SSH key, lab root CA key and certificate, and `jq` are present. |
+| `instance` | The AIG EC2 instance (found by its `Name` tag) is running. The bastion role has `ec2:DescribeInstances` for this. |
+| `api` | The AIG public FQDN (the `aig_fqdn` output, which becomes the certificate CN) is known and `enable-api --ttl 1h` over SSH to `nsadmin@<aig_private_ip>` returns an AIG Config API token. The token is regenerated after an HTTP 401 or about 50 minutes. |
+| `enrollment` | `GET https://<aig_private_ip>:8443/v1/config/bootstrap` reports `status` = `completed`. `failed` is permanent for that AIG instance. |
+| `certificate` | `GET /v1/config/certificate/status` reports `Active`. If the AIG has no certificate, the script posts a CSR (the `aig_cert_*` fields) to `/v1/config/certificate/csr`, signs it with the lab root CA (`subjectAltName = DNS:<fqdn>`, `extendedKeyUsage = serverAuth`), and posts the result to `/v1/config/certificate/install`. Files: `/home/ssm-user/aig-cert-request.csr` and `aig-cert-signed.pem`. |
+| `dlp` | `GET /v1/config/dlp` shows `certificate_configured` and `host_config.host_url` = `https://<dlpod_hostname>`. If not, the script uploads the lab root CA (`PUT /v1/config/dlp/ca-cert`) and sets the host (`PUT /v1/config/dlp/hostconfig`), then reads it back. |
+| `guardrails` | `GET /v1/config/ai-guardrails` shows `host_config.host_url` = the `guardrails_host_url` output. If not, it is set with `PUT /v1/config/ai-guardrails/hostconfig` and read back. |
 
-Progress and errors are logged with timestamps to `/var/log/aig-cert-setup.log`. From an SSM session, follow it with `sudo tail -f /var/log/aig-cert-setup.log`. To re-run the setup, remove `/etc/aig-cert-setup-complete` and run `sudo systemctl restart aig-cert-setup`.
+The bootstrap secret's `dlp` and `ai_guardrails` blocks are applied once after enrollment and a failure there is silent, which is why `dlp` and `guardrails` are checked and fixed here.
+
+### Readiness reporting
+
+The script writes its status to the SSM parameter `/<prefix>/aig-ready` (the bastion role may only `ssm:PutParameter` on it):
+
+```
+passed: prereqs, instance, api, enrollment | waiting on: certificate | then: dlp, guardrails | last error: <error>
+```
+
+The value lists the steps that have passed, the step being waited on, the steps still to come, and the last error. A permanent failure (bootstrap status `failed`) starts the value with `FAILED: <step> | `. When every step has passed the value is `healthy:<AIG instance id>`. After that the script keeps watching the AIG instance and starts over if it is replaced.
+
+`null_resource.aig_ready` (in `aig.tf`) runs after the AIG is created and polls the parameter every 10 seconds until it equals `healthy:<this AIG's instance id>` (up to 60 minutes), so `terraform apply` finishes only once the AIG is enrolled and configured. It stops early if the value starts with `FAILED:`. Because the instance ID is part of the value, a value left by an earlier AIG can never satisfy the gate. You can read the status at any time:
+
+```bash
+aws ssm get-parameter --name "/<prefix>/aig-ready" --region <region> --query Parameter.Value --output text
+```
+
+Progress and errors are logged with timestamps to `/var/log/aig-cert-setup.log`. From an SSM session, follow it with `sudo tail -f /var/log/aig-cert-setup.log`. To force a fresh pass, run `sudo systemctl restart aig-cert-setup`.
+
+### Removing the bastion
+
+Once the AIG is fully set up (`aig-ready` reads `healthy:<id>`), set `enable_bastion = false` and run `terraform apply`. Terraform removes the bastion instance, its IAM role and policies, its security group and the rules it added to the AIG, DLPoD and Guardrails groups, the `aig-ready` parameter and gate, and the SSH private key and lab root CA key and certificate secrets in Secrets Manager. The AIG, DLPoD and Guardrails keep working: the AIG's certificate and its DLP and Guardrails host settings live on the appliance. The CA files on disk, the EC2 key pair, and the keys in Terraform state are not touched. The private key stays on disk where Terraform wrote it (a generated key) or where `keypair_existing_private_key_local_path` points, so you can still SSH to the appliances from a machine that can reach them.
+
+Set `enable_bastion = true` again to rebuild it. The new bastion reads the secrets (recreated), finds the running AIG, and runs every check from the start. It changes only what differs: an `Active` certificate is left alone and matching DLP and Guardrails hosts are not rewritten. The apply then waits for `aig-ready` to read `healthy:<id>` again, because the parameter is recreated along with the bastion.
+
+Notes:
+
+- Do not disable the bastion on a first deployment. Without it the AIG gets no certificate and its DLP and Guardrails hosts are not re-checked.
+- If the AIG is replaced while the bastion is disabled (for example after the 24-hour enrollment token expires), enable the bastion again so the new AIG is configured.
+- With the bastion disabled, `wait_for_aig_to_complete_template` has no effect, and the DLPoD readiness gate probes from the Guardrails instance instead (the bastion otherwise does).
+- If the AIG's certificate is no longer `Active` when the bastion is rebuilt, the script cannot reuse the old bastion's saved CSR and reports the problem instead of fixing it.
+
+### Deployment ordering
+
+Four variables control whether Terraform waits for a readiness gate before creating the next component:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `wait_for_guardrails_to_deploy_dlpod` | `false` | DLPoD is not created until Guardrails reports healthy (about 30 minutes). `false`: as soon as the Guardrails instance exists. |
+| `wait_for_guardrails_to_deploy_aig` | `true` | The AIG is not created until Guardrails reports healthy. `false`: as soon as the Guardrails instance exists; the AIG may then link to Guardrails before the service is running. |
+| `wait_for_dlpod_to_deploy_aig` | `true` | The AIG is not created until DLPoD's HTTPS service answers. `false`: as soon as the DLPoD instance exists. |
+| `wait_for_aig_to_complete_template` | `true` | `terraform apply` does not finish until `aig-ready` is healthy. `false`: it finishes once the AIG is created. Needs `enable_bastion = true`. |
+
+With `false`, a gate polls nothing but its dependent is still created only after the instance it would have waited for exists (about 2 minutes), because Terraform's dependencies are static.
 
 ## Remote state
 
@@ -342,8 +393,9 @@ secretsmanager:GetSecretValue / PutSecretValue / TagResource
 ### SSM
 
 ```
-ssm:PutParameter / GetParameter / DeleteParameter   ← Guardrails readiness gate
-ssm:SendCommand / GetCommandInvocation              ← DLPoD readiness gate (polls via Guardrails)
+ssm:PutParameter / GetParameter / DeleteParameter   ← Guardrails and AIG readiness gates
+ssm:DescribeParameters / ListTagsForResource        ← aws_ssm_parameter.aig_ready (Terraform refresh)
+ssm:SendCommand / GetCommandInvocation              ← DLPoD readiness gate (polls via the bastion)
 ssm:DescribeInstanceInformation
 ```
 
@@ -376,12 +428,13 @@ dynamodb:GetItem / PutItem / DeleteItem   on your lock table (if using DynamoDB 
 |------|----------|
 | `main.tf` | Terraform config, providers, data sources, shared locals |
 | `vpc.tf` | VPC, subnets, IGW, NAT gateway, route tables, VPC endpoints, Route 53 |
-| `aig.tf` | Netskope appliance registration, Secrets Manager bootstrap, AIG IAM/SG/EC2 |
-| `guardrails.tf` | Guardrails IAM, security group, CloudWatch, EC2, readiness gate |
+| `aig.tf` | Netskope appliance registration, Secrets Manager bootstrap, AIG IAM/SG/EC2, `aig-ready` parameter and readiness gate |
+| `guardrails.tf` | Guardrails IAM, security group, CloudWatch, EC2, readiness parameter and gates |
 | `dlpod.tf` | DLPoD TLS certificates, bootstrap config, IAM, security group, EC2, readiness gate |
 | `ssh_keys.tf` | SSH key pair (provided or generated) and its Secrets Manager secret |
 | `ca.tf` | Lab root CA (provided or generated with openssl) and its Secrets Manager secrets |
-| `bastion.tf` | Troubleshooting bastion, runs the AIG certificate setup (temporary — delete post-POV) |
+| `bastion.tf` | Optional bastion (`enable_bastion`): AIG certificate and host setup, readiness reporting, DLPoD probe, troubleshooting access |
+| `moved.tf` | `moved` blocks that keep existing state when resources gained `count`; safe to delete after one apply |
 | `templates/aig-cert-setup.sh` | AIG certificate setup script installed on the bastion |
 | `variables.tf` | All input variable definitions |
 | `outputs.tf` | Terraform outputs |

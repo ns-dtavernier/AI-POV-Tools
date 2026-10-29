@@ -95,15 +95,22 @@ locals {
 }
 
 # ── Secrets Manager: private key for the bastion ──────────────────────────────
-# The name starts with "aig/" to match the deployment IAM policy.
+# The name starts with "aig/" to match the deployment IAM policy. Only the bastion
+# reads this, so it exists only while var.enable_bastion is true; disabling the
+# bastion deletes it (immediately: recovery_window_in_days = 0). The key itself
+# stays in Terraform state, and the key pair stays in EC2.
 
 resource "aws_secretsmanager_secret" "ssh_private_key" {
+  count = var.enable_bastion ? 1 : 0
+
   name                    = local.ssh_key_secret_name
   description             = "SSH private key matching the ${local.keypair_name} key pair - downloaded by the bastion to SSH to the AIG"
   recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "ssh_private_key" {
-  secret_id     = aws_secretsmanager_secret.ssh_private_key.id
+  count = var.enable_bastion ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.ssh_private_key[0].id
   secret_string = local.ssh_private_key
 }

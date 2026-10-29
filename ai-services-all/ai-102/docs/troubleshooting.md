@@ -4,7 +4,7 @@
 
 | Component | Log Location | Health Check |
 |-----------|-------------|--------------|
-| Guardrails Phase 1 | `/var/log/user-data.log` on instance | SSM Parameter `/<prefix>/guardrails-ready` = `healthy` |
+| Guardrails Phase 1 | `/var/log/user-data.log` on instance | SSM Parameter `/<prefix>/guardrails-ready` = `healthy:<instance id>` |
 | Guardrails Phase 2 | `/var/log/guardrails-phase2.log` on instance | `curl http://10.0.2.10:8080/ping` → `{"status":"Healthy"}` |
 | DLPoD | `/var/log/nsbootstrap.log` on instance | `curl -sk https://10.0.2.20/` → HTTP response (any code) |
 | AIG | AIG appliance logs via Netskope tenant | Appliance shows "Connected" in Settings → AI Gateway |
@@ -40,7 +40,7 @@ CMDID=$(aws ssm send-command \
   --region YOUR_REGION \
   --instance-ids $(terraform output -raw guardrails_instance_id) \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["echo === Phase1 ===; tail -3 /var/log/user-data.log 2>/dev/null; echo === Phase2 ===; tail -3 /var/log/guardrails-phase2.log 2>/dev/null; echo === Docker ===; docker ps 2>/dev/null | head -3 || echo no-docker; echo === SSM param ===; aws ssm get-parameter --name /YOUR_PREFIX-guardrails/guardrails-ready --region YOUR_REGION --query Parameter.Value --output text 2>/dev/null || echo not-set"]' \
+  --parameters 'commands=["echo === Phase1 ===; tail -3 /var/log/user-data.log 2>/dev/null; echo === Phase2 ===; tail -3 /var/log/guardrails-phase2.log 2>/dev/null; echo === Docker ===; docker ps 2>/dev/null | head -3 || echo no-docker; echo === SSM param ===; aws ssm get-parameter --name /YOUR_PREFIX/guardrails-ready --region YOUR_REGION --query Parameter.Value --output text 2>/dev/null || echo not-set"]' \
   --query Command.CommandId --output text)
 sleep 12
 aws ssm get-command-invocation \
@@ -106,16 +106,17 @@ sudo docker ps
 sudo docker logs $(sudo docker ps -q)
 ```
 
-### Stale SSM readiness parameter
+### Guardrails readiness gate never passes
 
-If `terraform apply` passes the Guardrails readiness gate instantly on a fresh deploy but Guardrails isn't actually ready, a stale parameter from a previous deployment is the cause. The readiness gate (`null_resource.guardrails_ready`) deletes the parameter before polling, so this should be self-correcting. To manually clear it:
+The gate waits for the SSM parameter to equal `healthy:<Guardrails instance id>`. Read what the instance last reported:
 
 ```bash
-aws ssm delete-parameter \
-  --name "/YOUR_PREFIX-guardrails/guardrails-ready" \
-  --region YOUR_REGION
-terraform apply  # re-run; gate will now wait properly
+aws ssm get-parameter \
+  --name "/YOUR_PREFIX/guardrails-ready" \
+  --region YOUR_REGION --query Parameter.Value --output text
 ```
+
+A value left by an earlier instance cannot satisfy the gate, because the instance ID is part of the value. If the parameter still reads `Guardrails booting` long after the instance started, the instance is not reporting: check `/var/log/user-data.log` and `/var/log/guardrails-phase2.log` on it, and that the instance role still allows `ssm:PutParameter` on the parameter.
 
 ---
 
@@ -298,9 +299,10 @@ terraform apply \
 ```bash
 terraform apply \
   -replace=aws_instance.guardrails \
-  -replace=null_resource.guardrails_ready
-# This will also recreate null_resource.dlpod_ready and aws_instance.aig
-# (because AIG depends on both readiness gates)
+  -replace='null_resource.guardrails_ready[0]'
+# The gate has an index because it exists only when wait_for_guardrails_to_deploy_aig
+# is true; drop that -replace if it is false.
+# This will also recreate aws_instance.aig (the AIG depends on the gate)
 ```
 
 ### Rebuild DLPoD
@@ -308,6 +310,8 @@ terraform apply \
 ```bash
 terraform apply \
   -replace=aws_instance.dlpod \
-  -replace=null_resource.dlpod_ready
+  -replace='null_resource.dlpod_ready[0]'
+# The gate exists only when wait_for_dlpod_to_deploy_aig is true; drop that
+# -replace if it is false.
 # AIG will also be recreated (depends on dlpod_ready)
 ```

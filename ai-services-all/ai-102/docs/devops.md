@@ -33,7 +33,7 @@
 **Guardrails instance role:**
 - `AmazonSSMManagedInstanceCore` (AWS managed policy) — enables SSM Session Manager
 - `s3:GetObject` + `s3:ListBucket` on the image bucket/key — downloads `aisecurity-llm.tgz`
-- `ssm:PutParameter` + `ssm:DeleteParameter` on `/<prefix>/guardrails-ready` — writes readiness signal
+- `ssm:PutParameter` on `/<prefix>/guardrails-ready` — writes readiness signal (the parameter itself is created and deleted by Terraform)
 - `logs:CreateLogStream` + `logs:PutLogEvents` + `logs:DescribeLogStreams` on the CloudWatch log group
 
 **DLPoD instance role:**
@@ -63,7 +63,7 @@ The AIG bootstrap secret (`aig/<aws_object_unique_prefix>/bootstrap` by default)
 
 ### CloudWatch Logs
 
-Log group `/<project>-<environment>/guardrails` with 30-day retention captures Guardrails service logs. The Guardrails instance writes logs via the CloudWatch agent using the interface VPC endpoint (no internet path).
+Log group `/<prefix>/guardrails` with 30-day retention captures Guardrails service logs. The Guardrails instance writes logs via the CloudWatch agent using the interface VPC endpoint (no internet path).
 
 ### TLS (Terraform `tls` provider)
 
@@ -132,7 +132,7 @@ The leaf cert and private key go only to DLPoD:
 13. AIG configures Guardrails at `ai_guardrails.host`
 14. AIG validates and configures DLPoD at `dlp.host` — see AIG Validation section
 
-**Dependency:** AIG EC2 is created only after both `null_resource.guardrails_ready` and `null_resource.dlpod_ready` succeed — Guardrails and DLPoD must be serving before the AIG tries to validate them.
+**Dependency:** by default the AIG EC2 is created only after both `null_resource.guardrails_ready` and `null_resource.dlpod_ready` succeed — Guardrails and DLPoD must be serving before the AIG tries to validate them. `wait_for_guardrails_to_deploy_aig` and `wait_for_dlpod_to_deploy_aig` turn each wait off (the gate then has `count = 0` and the AIG waits only for that instance to be created). `wait_for_guardrails_to_deploy_dlpod` makes the DLPoD instance wait for Guardrails through `null_resource.guardrails_ready_for_dlpod`; it shares a script with `guardrails_ready`.
 
 ### Guardrails Bootstrap (Two-Phase)
 
@@ -140,7 +140,7 @@ The instance uses `guardrails_ami_id` if set (a custom Ubuntu-based AMI with the
 
 **Phase 1 — EC2 UserData (runs at first boot):**
 1. Install `curl`, `jq`, `ubuntu-drivers-common` (and `awscli` if no `aws` CLI exists); apply OS upgrades (Ubuntu 22.04 runs automatic package updates at first boot, so apt waits on the dpkg lock)
-2. Delete any stale `/<prefix>/guardrails-ready` SSM parameter from a previous deployment
+2. Set the `/<prefix>/guardrails-ready` SSM parameter to `Guardrails just starting`
 3. Snapshot installed versions of the NVIDIA driver, NVIDIA Container Toolkit and Docker to `/var/lib/guardrails-setup/before.env`
 4. NVIDIA driver: if no apt driver package and `nvidia-smi` fails, run `ubuntu-drivers install`; if a driver package exists, `apt-get install --only-upgrade` it
 5. Write Phase 2 script to `/opt/guardrails-phase2.sh` and install/enable `guardrails-setup.service`
@@ -154,11 +154,11 @@ The instance uses `guardrails_ami_id` if set (a custom Ubuntu-based AMI with the
 5. LLM image: use a local image whose name contains `aisecurity`; download `aisecurity-llm.tgz` from S3 and `docker load` it **only if no local image exists**
 6. Container: if one exists for the image, set `--restart=unless-stopped` and `docker restart` it when the driver, toolkit, Docker, runtime config or image changed (otherwise `docker start`); if none exists, create `guardrails` on port 8080 with GPU access
 7. Poll `http://localhost:8080/ping` until `{"status":"Healthy"}`
-8. Write SSM Parameter `/<prefix>/guardrails-ready = healthy`
+8. Write SSM Parameter `/<prefix>/guardrails-ready = healthy:<instance id>`
 
 Expect ~5–10 min with a current custom AMI and no reboot; up to ~30 min on stock Ubuntu (full install, image download from S3 and load).
 
-**Readiness gate:** `null_resource.guardrails_ready` deletes any stale parameter first, then polls every 30 seconds (up to 40 minutes). `terraform apply` blocks here until the parameter appears. **Observed total Phase 1 + Phase 2: ~30 minutes** on `g4dn.xlarge` in us-west-1.
+**Readiness gate:** `null_resource.guardrails_ready` first sets the parameter to `Guardrails booting`, then polls every 10 seconds (up to 90 minutes) until it equals `healthy:<this instance's id>`. `terraform apply` blocks here until then. Because the instance ID is part of the value, a value left by an earlier instance can never satisfy the gate. The parameter is a Terraform-managed `aws_ssm_parameter` (value changes are ignored), so it is deleted on destroy. **Observed total Phase 1 + Phase 2: ~30 minutes** on `g4dn.xlarge` in us-west-1.
 
 **Monitor progress:**
 ```bash
@@ -190,7 +190,7 @@ DLPoD uses Netskope's `nsbootstrap.service` — a first-boot service that reads 
 
 Note: IMDSv2 does not prevent processes running directly in the host network namespace from reading user-data — any host process that makes the PUT token request first can still access metadata. The protection is specifically against redirect-based SSRF and container escape paths.
 
-**Readiness gate:** `null_resource.dlpod_ready` uses `ssm:SendCommand` on the Guardrails instance to `curl -sk https://<dlpod_ip>/` and waits for a TCP/TLS response (any HTTP status). It uses Guardrails as a proxy because DLPoD is in the private subnet and Terraform runs outside the VPC — direct connectivity is not available. Guardrails is used (rather than the bastion) because its readiness is already confirmed at this point.
+**Readiness gate:** `null_resource.dlpod_ready` uses `ssm:SendCommand` on the bastion to `curl -sk https://<dlpod_ip>/` and waits for a TCP/TLS response (any HTTP status). With `enable_bastion = false` the Guardrails instance is the probe instead (an extra rule, `dlpod_https_from_guardrails`, allows it to reach port 443). It uses the bastion as a proxy because DLPoD is in the private subnet and Terraform runs outside the VPC — direct connectivity is not available. The bastion is used (rather than Guardrails) so this gate does not depend on the Guardrails gate; the bastion's SSM agent can take a minute or two to register, and the loop retries until it does.
 
 ---
 
@@ -243,7 +243,7 @@ The pipeline needs:
 
 Terraform `taint` (or `-replace` flag in Terraform >= 1.5) is the mechanism for forcing appliance replacement. See the troubleshooting guide for exact commands.
 
-The readiness gates (`null_resource.guardrails_ready`, `null_resource.dlpod_ready`) only re-run when their `triggers` change (the instance ID). Tainting only the AIG does not re-run the gates — it assumes Guardrails and DLPoD are still healthy.
+The readiness gates (`null_resource.guardrails_ready`, `null_resource.guardrails_ready_for_dlpod`, `null_resource.dlpod_ready`, `null_resource.aig_ready`) only re-run when their `triggers` change (the instance ID). Tainting only the AIG does not re-run the gates — it assumes Guardrails and DLPoD are still healthy.
 
 ### Sensitive Values in State
 

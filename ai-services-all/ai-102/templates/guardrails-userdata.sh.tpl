@@ -54,11 +54,11 @@ docker_ver() {
 }
 
 # Publish a status to the SSM parameter that the Terraform readiness gate
-# (null_resource.guardrails_ready) polls; "healthy" signals readiness.
+# (null_resource.guardrails_ready) polls. Readiness is "healthy:<instance id>".
 # Usage: aws_ssm_put_parameter_guardrails_ready <value>
 aws_ssm_put_parameter_guardrails_ready() {
   aws ssm put-parameter \
-    --name "/${guardrails_name}/guardrails-ready" \
+    --name "${guardrails_ready_parameter}" \
     --value "$1" \
     --type String \
     --overwrite \
@@ -80,14 +80,7 @@ $APT install -y curl jq ubuntu-drivers-common
 # Only install the distro awscli if no aws CLI is present (an AMI may ship v2).
 command -v aws >/dev/null 2>&1 || $APT install -y awscli
 
-# Clear any stale readiness signal from a previous deployment so the
-# Terraform readiness gate does not complete prematurely on re-deploy.
-#aws ssm delete-parameter \
-#  --name "/${guardrails_name}/guardrails-ready" \
-#  --region ${aws_region} 2>/dev/null || true
-
-# Reset the readiness signal to indicate that Phase 1 is running and to prevent
-# Terraform from completing prematurely on re-deploy.
+# Reset the readiness signal to indicate that Phase 1 is running.
 aws_ssm_put_parameter_guardrails_ready "Guardrails just starting"
 
 # ---- Snapshot component versions BEFORE upgrading anything ----
@@ -351,7 +344,7 @@ fi
 # ---- Log final health status and signal readiness ----
 if curl -sf http://localhost:8080/ping | grep -q Healthy; then
   echo "$(ts) SUCCESS: Guardrails service is healthy and ready on port 8080."
-  aws_ssm_put_parameter_guardrails_ready "healthy"
+  aws_ssm_put_parameter_guardrails_ready "healthy:$${INSTANCE_ID}"
 else
   echo "$(ts) ERROR: Guardrails service did not become healthy:" \
     "not healthy after initial 30 minutes; restarted container; still not" \

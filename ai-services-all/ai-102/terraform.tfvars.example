@@ -121,7 +121,7 @@ ca_new_addext = [
 ]
 ca_new_algorithm = "RSA" # only RSA is supported
 ca_new_rsa_bits  = 2048  # 2048, 3072 or 4096
-ca_new_days = 365
+ca_new_days      = 365
 
 # ── AIG - Cert ────────────────────────────────────────────────────────────────
 # Subject and key settings for the certificate whose CSR the AIG generates (to be
@@ -193,6 +193,23 @@ aig_private_ip = "10.0.1.20"
 # Must start with "aig/" to match the deployment IAM policy.
 # Defaults to "aig/<aws_object_unique_prefix>/bootstrap"; set only to override.
 # secret_name = "aig/prod/bootstrap"
+
+# ── Bastion and deployment ordering ───────────────────────────────────────────
+
+# The bastion signs and installs the AIG certificate, sets the AIG's DLP and
+# Guardrails hosts, and reports the AIG's readiness. Leave true until the AIG is
+# fully set up; then set false and apply to remove the bastion and its secrets.
+# The AIG, DLPoD and Guardrails keep working. Set true again to rebuild it.
+#enable_bastion = true
+
+# Which readiness gates Terraform waits for before creating the next component.
+# DLPoD waits for Guardrails to be healthy (about 30 minutes) before it is created.
+#wait_for_guardrails_to_deploy_dlpod = false
+# The AIG waits for Guardrails to be healthy / DLPoD's HTTPS service to answer.
+#wait_for_guardrails_to_deploy_aig = true
+#wait_for_dlpod_to_deploy_aig      = true
+# terraform apply waits until the AIG is enrolled and configured (needs the bastion).
+#wait_for_aig_to_complete_template = true
 
 # ── Guardrails — EC2 ──────────────────────────────────────────────────────────
 
