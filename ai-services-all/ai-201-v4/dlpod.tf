@@ -1,0 +1,273 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# DLP On-Demand (DLPoD)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── TLS: DLPoD server certificate ────────────────────────────────────────────
+#
+# DLPoD rejects CA:TRUE certs in dlpaas.server-cert, so the server cert must be
+# a leaf signed by a CA. The CA is the shared lab root CA from ca.tf (generated
+# with openssl, or supplied via ca_existing_signing_key_local_path); the AIG
+# CSR is signed by the same CA. There is no intermediate CA: the leaf is signed
+# directly by the root.
+#
+#   tls_locally_signed_cert.dlpod  — server cert signed by the CA (CA:FALSE, server_auth)
+#
+# Bootstrap mapping:
+#   dlpaas.server-cert                  → leaf server cert (CA:FALSE)
+#   dlpaas.server-key                   → server private key (PKCS#8)
+#   dlpaas.server-intermediate-ca-chain → CA cert
+#   dlp.certificate in AIG secret       → CA cert (verifies DLPoD's TLS chain)
+#
+# Certificate subject, key and validity come from the dlpod_cert_* variables.
+#
+# Private key material lives in Terraform state — use S3 remote state with
+# SSE-KMS encryption (see backend.hcl.example) to protect it at rest.
+
+resource "tls_private_key" "dlpod" {
+  algorithm = var.dlpod_cert_key_algorithm
+  rsa_bits  = var.dlpod_cert_rsa_bits
+}
+
+resource "tls_cert_request" "dlpod" {
+  private_key_pem = tls_private_key.dlpod.private_key_pem
+
+  subject {
+    # Defaults to dlpod_hostname, which is always also the DNS SAN below.
+    common_name         = coalesce(var.dlpod_cert_common_name, var.dlpod_hostname)
+    organization        = var.dlpod_cert_organization
+    organizational_unit = var.dlpod_cert_organization_unit
+    country             = var.dlpod_cert_country
+    province            = var.dlpod_cert_state
+    locality            = var.dlpod_cert_city
+  }
+
+  dns_names    = [var.dlpod_hostname]
+  ip_addresses = [var.dlpod_private_ip]
+}
+
+resource "tls_locally_signed_cert" "dlpod" {
+  cert_request_pem   = tls_cert_request.dlpod.cert_request_pem
+  ca_private_key_pem = data.local_sensitive_file.ca_key.content
+  ca_cert_pem        = data.local_file.ca_cert.content
+
+  validity_period_hours = var.dlpod_cert_validity_period_days * 24
+  is_ca_certificate     = false
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
+}
+
+# ── DLPoD bootstrap config ────────────────────────────────────────────────────
+#
+# bootstrap.json is delivered as raw JSON in EC2 user-data.
+# nsbootstrap.service reads it at first boot — fail-closed on unknown keys.
+# The dlpaas section installs the Terraform-generated cert so the AIG's
+# dlp.certificate value matches what DLPoD actually presents over TLS.
+
+locals {
+  _dlpod_system = merge(
+    {
+      licensekey = var.netskope_onpremappliance_licensekey
+    },
+    var.dlpod_hostname != "" ? { hostname = var.dlpod_hostname } : {},
+    var.dlpod_ssh_public_key != "" ? {
+      ssh-public-keys = [{ key = var.dlpod_ssh_public_key, user = "nsadmin" }]
+    } : {}
+  )
+
+  dlpod_bootstrap = {
+    persona = var.dlpod_persona
+    dns = {
+      # VPC DNS resolver is always the VPC base address + 2
+      primary = cidrhost(var.vpc_cidr, 2)
+    }
+    interface = {
+      v4 = { dhcp = { enable = true } }
+    }
+    system = local._dlpod_system
+    dlpaas = {
+      "server-cert"                  = tls_locally_signed_cert.dlpod.cert_pem
+      "server-key"                   = tls_private_key.dlpod.private_key_pem_pkcs8
+      "server-intermediate-ca-chain" = data.local_file.ca_cert.content
+    }
+  }
+}
+
+# ── DLPoD — IAM ───────────────────────────────────────────────────────────────
+#
+# DLPoD reads bootstrap from raw user-data — no Secrets Manager access needed.
+# Instance profile is a base for operational access (add AmazonSSMManagedInstanceCore
+# to aws_iam_role.dlpod if SSM Session Manager access is required).
+
+resource "aws_iam_role" "dlpod" {
+  name = "${local.dlpod_name}-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_instance_profile" "dlpod" {
+  name = "${local.dlpod_name}-instance-profile"
+  role = aws_iam_role.dlpod.name
+}
+
+# ── DLPoD — Security Group ────────────────────────────────────────────────────
+#
+# Ingress is scoped to the AIG security group only — no other traffic reaches
+# DLPoD. This mirrors the Guardrails SG pattern.
+
+resource "aws_security_group" "dlpod" {
+  name        = "${local.dlpod_name}-sg"
+  description = "Netskope DLP On-Demand appliance"
+  vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description     = "All traffic from AIG - DLP inspection and management"
+    from_port       = 0
+    to_port         = 0
+    protocol        = "-1"
+    security_groups = [aws_security_group.aig.id]
+  }
+
+  egress {
+    description = "All outbound - Netskope cloud, licensing, package updates"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${local.dlpod_name}-sg" }
+}
+
+# ── DLPoD — EC2 Instance ──────────────────────────────────────────────────────
+#
+# Private IP is pinned so the AIG bootstrap secret can embed dlp.host before
+# this instance is created. IMDSv2 is enforced per the ZTP security design
+# (blocks SSRF reads of user-data from within the appliance).
+
+resource "aws_instance" "dlpod" {
+  ami                    = var.dlpod_ami_id
+  instance_type          = var.dlpod_instance_type
+  subnet_id              = aws_subnet.private.id
+  private_ip             = var.dlpod_private_ip
+  iam_instance_profile   = aws_iam_instance_profile.dlpod.name
+  vpc_security_group_ids = [aws_security_group.dlpod.id]
+  key_name               = local.dlpod_key_pair_name
+
+  # Raw JSON bootstrap.json — read by nsbootstrap.service at first boot.
+  user_data = jsonencode(local.dlpod_bootstrap)
+
+  # High IOPS during initialization speeds up nsbootstrap significantly.
+  # The appliance engineer recommends 9000 IOPS GP3 for init. This can be
+  # reduced to 3000 after the appliance is configured to avoid ongoing cost.
+  root_block_device {
+    volume_type           = "gp3"
+    iops                  = 9000
+    encrypted             = true
+    delete_on_termination = true
+  }
+
+  metadata_options {
+    http_tokens                 = "required" # IMDSv2 only
+    http_put_response_hop_limit = 1
+  }
+
+  tags = { Name = local.dlpod_name }
+
+  # guardrails_ready_for_dlpod has count 0 unless wait_for_guardrails_to_deploy_dlpod.
+  depends_on = [
+    aws_nat_gateway.this,
+    null_resource.guardrails_ready_for_dlpod,
+  ]
+}
+
+# ── DLPoD readiness gate ───────────────────────────────────────────────────────
+#
+# DLPoD bootstrap (nsbootstrap.service) applies the dlpaas cert and starts the
+# HTTPS service on port 443. This takes several minutes after the instance
+# launches. This null_resource uses SSM Send Command on a probe instance in the
+# same VPC to curl DLPoD port 443 and block AIG creation until the TLS service is
+# actually accepting connections. Enabled by var.wait_for_dlpod_to_deploy_aig;
+# with false the AIG waits only for the DLPoD instance to be created.
+#
+# The probe is the bastion when enable_bastion is true (port 443 is allowed by
+# aws_security_group_rule.dlpod_from_bastion), otherwise the Guardrails instance
+# (allowed by dlpod_https_from_guardrails). Its SSM agent can take a minute or two
+# to register after boot; the send-command loop below retries until it does.
+
+locals {
+  dlpod_probe_instance_id = coalesce(one(aws_instance.bastion[*].id), aws_instance.guardrails.id)
+}
+
+# DLPoD HTTPS from Guardrails, for the readiness probe when there is no bastion
+resource "aws_security_group_rule" "dlpod_https_from_guardrails" {
+  count = !var.enable_bastion && var.wait_for_dlpod_to_deploy_aig ? 1 : 0
+
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.dlpod.id
+  source_security_group_id = aws_security_group.guardrails.id
+  description              = "DLPoD readiness probe from Guardrails (no bastion)"
+}
+
+resource "null_resource" "dlpod_ready" {
+  count = var.wait_for_dlpod_to_deploy_aig ? 1 : 0
+
+  triggers = {
+    instance_id = aws_instance.dlpod.id
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOF
+      echo "Waiting for DLPoD HTTPS service to become ready (up to 20 minutes)..."
+      PROBE="${local.dlpod_probe_instance_id}"
+      DLPOD_IP="${aws_instance.dlpod.private_ip}"
+      REGION="${var.aws_region}"
+      n=0
+      until
+        CMDID=$(aws ssm send-command \
+          --region "$REGION" \
+          --instance-ids "$PROBE" \
+          --document-name "AWS-RunShellScript" \
+          --parameters "commands=[\"curl -sk --max-time 5 https://$DLPOD_IP/ -o /dev/null && echo PORT_OPEN || echo PORT_CLOSED\"]" \
+          --query "Command.CommandId" \
+          --output text 2>/dev/null) && \
+        sleep 8 && \
+        aws ssm get-command-invocation \
+          --region "$REGION" \
+          --command-id "$CMDID" \
+          --instance-id "$PROBE" \
+          --query "StandardOutputContent" \
+          --output text 2>/dev/null | grep -q "PORT_OPEN"
+      do
+        n=$((n + 1))
+        if [ $n -ge 40 ]; then
+          echo "ERROR: DLPoD HTTPS service did not become ready within 20 minutes."
+          exit 1
+        fi
+        printf "%s %s\n" "$(date '+%H:%M:%S')" "DLPoD HTTPS service not ready yet"
+        sleep 22
+      done
+      echo "DLPoD HTTPS service is ready."
+    EOF
+  }
+
+  depends_on = [
+    aws_instance.bastion,
+    aws_instance.guardrails,
+    aws_security_group_rule.dlpod_https_from_guardrails,
+    aws_instance.dlpod,
+  ]
+}
